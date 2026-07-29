@@ -193,7 +193,8 @@ separately and strictly (`id` or `root`), never from the display path.
 
 **Both lists empty** is the "nothing local matches" verdict (`parsed.kind ==
 "unsupported"`, `warnings: ["no local checkout contains this path"]`): no button
-is shown at all and the URL is cached as a skip.
+is shown at all and the URL is cached as a skip — but only for the 10 s cache
+TTL, since mounting a checkout must be able to revise it without a page reload.
 
 ### `POST /open`
 
@@ -249,7 +250,11 @@ and re-opens the picker with the fresh list.
   file-vs-directory by stat-ing the path, so the extension over-triggers and
   lets `/resolve` say no.
 - **Hover.** ~150 ms debounce before asking the daemon; results are cached per
-  URL for the session, so re-hovering is instant.
+  URL, so re-hovering is instant. The cache **expires after 10 s**, because a
+  resolve is mostly a snapshot of mutable machine state — which Neovim instances
+  are running, which checkouts are mounted. Held for the session, an editor
+  started after the first hover would never be offered. Only a verdict on the
+  URL's *shape* (`NO_PROVIDER`, 4xx) is cached permanently.
 - **The hand-over.** A single shared 120 ms timer keeps the button alive while
   the pointer travels from the link to it. Leaving *either* the link or the
   button starts it; entering *either* cancels it.

@@ -26,6 +26,7 @@
   var OK_DELAY = 900; // how long the success checkmark stays up
   var MIN_SEGMENTS = 3; // coarse triage: nav routes are shorter than file paths
   var CACHE_MAX = 400; // resolve-cache ceiling, LRU-evicted
+  var CACHE_TTL = 10000; // ms a machine-state-dependent resolve stays fresh
   var GAP = 4; // px between the link box and the button
   var KICKSTART = 'launchctl kickstart -k gui/$(id -u)/com.qoob23.codelink';
   var SVG_NS = 'http://www.w3.org/2000/svg';
@@ -725,17 +726,26 @@
   var reqSeq = 0; // guards against out-of-order async replies
   var rafPending = false;
 
-  var cache = new Map(); // url -> {kind:'ok', data} | {kind:'skip'}
+  var cache = new Map(); // url -> {v: {kind:'ok', data} | {kind:'skip'}, exp}
 
   /*
    * Bounded LRU. A single-page-app session is long-lived and triage over-triggers, so
    * an unbounded Map would accrue one entry per hovered URL for the tab's whole
    * life. Map iterates in insertion order, so deleting-then-setting moves a key
    * to the back and the first key is always the least recently used.
+   *
+   * Entries also EXPIRE, because a resolve is mostly a snapshot of mutable machine
+   * state: which Neovim instances are running, which checkouts are mounted. Held
+   * forever, an editor started after the first hover never takes effect — the link
+   * goes on offering a new instance because this tab still believes none exists,
+   * and cacheGet's recency refresh keeps the links you use most the most stale.
+   *
+   * A verdict about the URL's *shape* (NO_PROVIDER, 4xx) is not machine state and
+   * cannot go stale, so it is stored with exp 0, meaning permanent.
    */
-  function cachePut(url, value) {
+  function cachePut(url, value, ttl) {
     if (cache.has(url)) cache.delete(url);
-    cache.set(url, value);
+    cache.set(url, { v: value, exp: ttl ? Date.now() + ttl : 0 });
     while (cache.size > CACHE_MAX) {
       var oldest = cache.keys().next().value;
       if (oldest === undefined) break;
@@ -745,8 +755,16 @@
 
   function cacheGet(url) {
     var hit = cache.get(url);
-    if (hit !== undefined) cachePut(url, hit); // refresh recency
-    return hit;
+    if (hit === undefined) return undefined;
+    if (hit.exp && Date.now() >= hit.exp) {
+      cache.delete(url);
+      return undefined;
+    }
+    // Refresh LRU recency but NOT the deadline: re-hovering a link must not keep
+    // a stale instance list alive indefinitely.
+    cache.delete(url);
+    cache.set(url, hit);
+    return hit.v;
   }
 
   var pickerRows = [];
@@ -1302,7 +1320,7 @@
           if (fresh.ok) {
             var data = normalize(fresh.data);
             entry = { kind: 'ok', data: data };
-            cachePut(url, entry);
+            cachePut(url, entry, CACHE_TTL);
             if (data.openInstances.length || data.rootCandidates.length) {
               openPicker(data.openInstances.length ? 'existing' : 'new', 'that instance is gone — pick another');
               return;
@@ -1380,12 +1398,15 @@
           // deliberately over-triggers, this is the *expected* outcome for most
           // links on the site — a grey button here would put a permanent dot on
           // half the page. Cache the negative and show nothing at all.
-          cachePut(url, { kind: 'skip' });
+          // Expiring, not permanent: "no checkout has this path" is a fact about
+          // this machine right now, and mounting a worktree must be able to
+          // change it without a page reload.
+          cachePut(url, { kind: 'skip' }, CACHE_TTL);
           hideNow();
           return;
         }
         entry = { kind: 'ok', data: data };
-        cachePut(url, entry);
+        cachePut(url, entry, CACHE_TTL);
         renderReady();
         return;
       }
@@ -1406,14 +1427,17 @@
        * The daemon deliberately reports it as HTTP *200* with no `error` field,
        * because it is not an error. Keyed on `code`, never on status: triage
        * over-triggers on purpose, so this is the ordinary outcome for most links
-       * and must paint nothing at all. Same treatment as the empty-list case.
+       * and must paint nothing at all. Cached permanently — unlike the empty-list
+       * case, this is a judgement on the URL's shape, which no local change can
+       * revise.
        */
       if (reply.code === 'NO_PROVIDER') {
         cachePut(url, { kind: 'skip' });
         hideNow();
         return;
       }
-      // 4xx from the daemon is a verdict about this URL; cache it as a skip.
+      // 4xx from the daemon is a verdict about this URL; cache it as a skip,
+      // permanently, for the same reason.
       if (reply.kind === 'api' && reply.status >= 400 && reply.status < 500) {
         cachePut(url, { kind: 'skip' });
         hideNow();
