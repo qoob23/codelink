@@ -69,12 +69,48 @@ mkdir -p "$HOME/Library/LaunchAgents"
 # Earlier versions symlinked the plist here. Redirecting onto a symlink writes
 # THROUGH it, i.e. straight back into the checkout, so unlink first.
 rm -f "$PLIST_DST"
-sed -e "s|__BIN__|$BIN|g" \
-    -e "s|__NVIM__|$NVIM|g" \
-    -e "s|__PATH__|$(dirname "$NVIM"):/usr/bin:/bin:/usr/sbin:/sbin|g" \
-    -e "s|__EXTENSION_DIR__|$CODELINK_EXTENSION_DIR|g" \
-    -e "s|__STATE_DIR__|$STATE|g" \
-    "$PLIST_TMPL" >"$PLIST_DST"
+
+# Every value spliced in below is an absolute path off the user's own
+# filesystem, and the two obvious ways to substitute one both mangle characters
+# a path may legally contain:
+#   sed "s|__BIN__|$BIN|"   — an unescaped & in the replacement means "the whole
+#     match", so a checkout under /Users/x/A&B rendered as
+#     /Users/x/A__EXTENSION_DIR__B with no error at all; a | in a path closes
+#     the s|…| delimiter and aborts the run outright.
+#   ${plist//__BIN__/$BIN}  — bash 5.2 gave & in the replacement that same
+#     "whole match" meaning, so the identical path renders one way under
+#     /bin/bash (3.2) and another under a Homebrew bash. Version-dependent
+#     output is worse than the sed bug, not better.
+# Hence an explicit literal splice. The values then land in XML text nodes, so
+# & < > are escaped too — otherwise the plist is not well-formed and launchd
+# rejects it.
+replace_all() { # <haystack> <needle> <replacement>, all literal
+    local hay=$1 needle=$2 repl=$3 out=''
+    while [[ $hay == *"$needle"* ]]; do
+        out+="${hay%%"$needle"*}$repl"
+        hay=${hay#*"$needle"}
+    done
+    printf '%s' "$out$hay"
+}
+
+xml_escape() {
+    local s=$1
+    s=$(replace_all "$s" '&' '&amp;')
+    s=$(replace_all "$s" '<' '&lt;')
+    s=$(replace_all "$s" '>' '&gt;')
+    printf '%s' "$s"
+}
+
+plist=$(<"$PLIST_TMPL")
+render() { plist=$(replace_all "$plist" "$1" "$(xml_escape "$2")"); }
+
+render __BIN__           "$BIN"
+render __NVIM__          "$NVIM"
+render __PATH__          "$(dirname "$NVIM"):/usr/bin:/bin:/usr/sbin:/sbin"
+render __EXTENSION_DIR__ "$CODELINK_EXTENSION_DIR"
+render __STATE_DIR__     "$STATE"
+
+printf '%s\n' "$plist" >"$PLIST_DST"
 
 # bootout is expected to fail on a first install; the daemon isn't loaded yet.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
