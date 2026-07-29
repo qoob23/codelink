@@ -413,7 +413,11 @@ func (s *Server) resolveURL(raw string) resolveResponse {
 			"%s=%s — pinned revision; local file may differ", prov.RefParam, *parsed.Ref))
 	}
 
-	allRoots := s.roots.Expand(prov)
+	// A URL that names its repository may only ever reach that repository's
+	// checkout. The scope is inert when the provider captured no repo group, so
+	// such providers keep probing every root.
+	scope := s.roots.ScopeFor(prov, parsed.Repo)
+	allRoots := scope.Filter(s.roots.Expand(prov))
 
 	// Instances first: an nvim that can already open the file is the best
 	// possible answer.
@@ -431,6 +435,12 @@ func (s *Server) resolveURL(raw string) resolveResponse {
 	openInstances := make([]OpenInstance, 0, len(instances))
 	rootsWithInstance := map[string]bool{}
 	for _, inst := range instances {
+		// The scope applies here too, and this is where it matters most: an nvim
+		// already sitting in the wrong checkout is the TOP-ranked answer, so
+		// filtering only the root candidates would still open the wrong file.
+		if !scope.Allows(inst.Root) {
+			continue
+		}
 		local, _, ok := resolve.Resolve(parsed.RepoPath, inst.Cwd)
 		if !ok {
 			continue
@@ -468,6 +478,20 @@ func (s *Server) resolveURL(raw string) resolveResponse {
 	}
 	s.roots.Sort(cands)
 	resp.RootCandidates = cands
+
+	// Naming the repo that has no checkout here is the whole diagnosis; the
+	// generic "no local checkout contains this path" below would send the user
+	// looking for a missing file instead.
+	//
+	// The gate is the FILTERED root list, not the empty result: a checkout that
+	// survived the filter but does not have this file yet is a missing file, not
+	// a missing checkout, and saying otherwise sends the reader after the wrong
+	// thing. With no surviving root there is nothing to probe and no instance
+	// that could pass, so both lists are empty by construction.
+	if scope.Active() && len(allRoots) == 0 {
+		resp.Warnings = append(resp.Warnings,
+			fmt.Sprintf("repo %q matched no local checkout", parsed.Repo))
+	}
 
 	// kind comes from stat'ing the first path that actually resolved locally,
 	// never from guessing at the URL shape.

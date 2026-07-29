@@ -91,6 +91,145 @@ func TestExpandDeduplicates(t *testing.T) {
 	}
 }
 
+// repoFixture lays out two checkouts under a glob'ed directory plus one that no
+// roots entry can ever enumerate, which is what repoAliases exists for.
+func repoFixture(t *testing.T) (base string, glob providers.RootSpec) {
+	t.Helper()
+	base = t.TempDir()
+	for _, d := range []string{"checkouts/synapses", "checkouts/codelink", "elsewhere/neurons"} {
+		if err := os.MkdirAll(filepath.Join(base, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return base, providers.RootSpec{Glob: filepath.Join(base, "checkouts", "*")}
+}
+
+func TestRepoScopeFilter(t *testing.T) {
+	base, glob := repoFixture(t)
+	outside := filepath.Join(base, "elsewhere", "neurons")
+	m := NewManager(t.TempDir())
+
+	tests := []struct {
+		name    string
+		repo    string
+		aliases map[string]string
+		want    []string
+	}{
+		{
+			name: "no repo group means no filtering at all",
+			repo: "", want: []string{"codelink", "synapses"},
+		},
+		{
+			name: "only the checkout named after the repo survives",
+			repo: "synapses", want: []string{"synapses"},
+		},
+		{
+			name: "the repo name is matched case-insensitively",
+			repo: "Synapses", want: []string{"synapses"},
+		},
+		{
+			name: "an unknown repo leaves nothing to probe",
+			repo: "ghost", want: nil,
+		},
+		{
+			name: "an alias maps in a checkout named after something else",
+			repo: "widgets", aliases: map[string]string{"widgets": filepath.Join(base, "checkouts", "codelink")},
+			want: []string{"codelink"},
+		},
+		{
+			name: "an alias target no roots entry enumerates is still eligible",
+			repo: "widgets", aliases: map[string]string{"WIDGETS": outside},
+			want: []string{"neurons"},
+		},
+		{
+			name: "an alias adds to the name match rather than replacing it",
+			repo: "synapses", aliases: map[string]string{"synapses": outside},
+			want: []string{"neurons", "synapses"},
+		},
+		{
+			name: "an alias pointing at the name match is not added twice",
+			repo: "synapses", aliases: map[string]string{"synapses": filepath.Join(base, "checkouts", "synapses")},
+			want: []string{"synapses"},
+		},
+		{
+			name: "an alias to a missing directory is dropped",
+			repo: "widgets", aliases: map[string]string{"widgets": filepath.Join(base, "nowhere")},
+			want: nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &providers.Provider{Roots: []providers.RootSpec{glob}, RepoAliases: tc.aliases}
+			got := names(m.ScopeFor(p, tc.repo).Filter(m.Expand(p)))
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("Filter() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRepoScopeAllows covers the open-instance side of the filter: an instance
+// is judged by the directory it is rooted in, which may be a symlink to the
+// alias target.
+func TestRepoScopeAllows(t *testing.T) {
+	base, _ := repoFixture(t)
+	outside := filepath.Join(base, "elsewhere", "neurons")
+	link := filepath.Join(base, "link-to-neurons")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(t.TempDir())
+	p := &providers.Provider{RepoAliases: map[string]string{"synapses": outside}}
+
+	tests := []struct {
+		name string
+		repo string
+		dir  string
+		want bool
+	}{
+		{name: "inert scope admits anything", repo: "", dir: "/anywhere", want: true},
+		{name: "root named after the repo", repo: "synapses", dir: filepath.Join(base, "checkouts", "synapses"), want: true},
+		{name: "trailing separator is cleaned away", repo: "synapses", dir: filepath.Join(base, "checkouts", "synapses") + "/", want: true},
+		{name: "differently named root", repo: "synapses", dir: filepath.Join(base, "checkouts", "codelink"), want: false},
+		{name: "case-insensitive name match", repo: "SYNAPSES", dir: filepath.Join(base, "checkouts", "synapses"), want: true},
+		{name: "the alias target itself", repo: "synapses", dir: outside, want: true},
+		{name: "a symlink to the alias target", repo: "synapses", dir: link, want: true},
+		{name: "an alias configured for another repo", repo: "codelink", dir: outside, want: false},
+		{name: "empty directory", repo: "synapses", dir: "", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := m.ScopeFor(p, tc.repo).Allows(tc.dir); got != tc.want {
+				t.Errorf("Allows(%q) = %v, want %v", tc.dir, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExpandAllIncludesAliasTargets is the allowlist half: /open builds its
+// allowlist from ExpandAll, so an alias target the daemon offers as a candidate
+// must also be spawnable.
+func TestExpandAllIncludesAliasTargets(t *testing.T) {
+	base, glob := repoFixture(t)
+	outside := filepath.Join(base, "elsewhere", "neurons")
+	m := NewManager(t.TempDir())
+	cfg := &providers.Config{Providers: []*providers.Provider{{
+		Roots:       []providers.RootSpec{glob},
+		RepoAliases: map[string]string{"widgets": outside, "missing": filepath.Join(base, "nowhere")},
+	}}}
+
+	all := m.ExpandAll(cfg)
+	if got, want := names(all), []string{"codelink", "neurons", "synapses"}; !slices.Equal(got, want) {
+		t.Fatalf("ExpandAll() = %v, want %v", got, want)
+	}
+	if _, ok := Allowed(all, outside); !ok {
+		t.Error("an alias target must be an allowed spawn root")
+	}
+	if !PathAllowed(all, filepath.Join(outside, "lib", "x.go")) {
+		t.Error("a path inside an alias target must be allowed")
+	}
+}
+
 func TestSortChain(t *testing.T) {
 	state := t.TempDir()
 	m := NewManager(state)

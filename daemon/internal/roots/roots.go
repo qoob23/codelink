@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -188,17 +189,127 @@ func (m *Manager) Expand(p *providers.Provider) []Root {
 	return out
 }
 
-// ExpandAll enumerates the roots of every provider.
+// ExpandAll enumerates the roots of every provider, repoAliases targets
+// included.
+//
+// SECURITY: this list is the /open allowlist. An alias target is declared in
+// providers.json just like a root and is probed like one, so leaving it out
+// would make the daemon refuse to spawn in a checkout it just offered.
 func (m *Manager) ExpandAll(cfg *providers.Config) []Root {
 	var out []Root
 	seen := map[string]bool{}
 	for _, p := range cfg.Providers {
-		for _, r := range m.Expand(p) {
+		for _, r := range append(m.Expand(p), m.aliasRoots(p)...) {
 			if !seen[r.Path] {
 				seen[r.Path] = true
 				out = append(out, r)
 			}
 		}
+	}
+	return out
+}
+
+// aliasRoot expands one repoAliases target into a root, filling in recency from
+// the provider's specs so it ranks alongside the enumerated ones.
+func (m *Manager) aliasRoot(p *providers.Provider, target string) (Root, bool) {
+	path := filepath.Clean(ExpandTilde(target))
+	if !isDir(path) {
+		return Root{}, false
+	}
+	rs := []Root{{Path: path, Label: filepath.Base(path)}}
+	m.fillRecency(rs, p.Roots)
+	return rs[0], true
+}
+
+// aliasRoots expands every repoAliases target of a provider. The targets are
+// sorted first so the result does not depend on map iteration order.
+func (m *Manager) aliasRoots(p *providers.Provider) []Root {
+	targets := make([]string, 0, len(p.RepoAliases))
+	for _, t := range p.RepoAliases {
+		targets = append(targets, t)
+	}
+	sort.Strings(targets)
+
+	var out []Root
+	seen := map[string]bool{}
+	for _, t := range targets {
+		r, ok := m.aliasRoot(p, t)
+		if !ok || seen[r.Path] {
+			continue
+		}
+		seen[r.Path] = true
+		out = append(out, r)
+	}
+	return out
+}
+
+// RepoScope restricts a resolve to the checkout of one repository, using the
+// repo name the provider's "repo" group captured.
+//
+// The same file path exists in many checkouts, so without this a link to repo A
+// happily opens the same-named file in checkout B — including through an nvim
+// that is already running there.
+//
+// The zero value (empty repo) admits everything, which is what a provider whose
+// regexes capture no repo group must keep getting.
+type RepoScope struct {
+	repo     string
+	alias    Root
+	hasAlias bool
+}
+
+// ScopeFor resolves the repoAliases entry once, so the root filter and the
+// open-instance filter judge against the same directory.
+func (m *Manager) ScopeFor(p *providers.Provider, repo string) RepoScope {
+	sc := RepoScope{repo: repo}
+	if repo == "" {
+		return sc
+	}
+	if target := p.RepoAlias(repo); target != "" {
+		sc.alias, sc.hasAlias = m.aliasRoot(p, target)
+	}
+	return sc
+}
+
+// Active reports whether the scope excludes anything at all.
+func (sc RepoScope) Active() bool { return sc.repo != "" }
+
+// Allows reports whether dir may serve the scoped repo: it is named after the
+// repository, or it IS the checkout repoAliases points at. The alias comparison
+// resolves symlinks on both sides, like every other directory-identity test
+// here — a checkout root is routinely reached through one.
+func (sc RepoScope) Allows(dir string) bool {
+	if !sc.Active() {
+		return true
+	}
+	if dir == "" {
+		return false
+	}
+	dir = filepath.Clean(ExpandTilde(dir))
+	if strings.EqualFold(filepath.Base(dir), sc.repo) {
+		return true
+	}
+	return sc.hasAlias && resolve.SameDir(dir, sc.alias.Path)
+}
+
+// Filter keeps the eligible roots and adds the alias target, which is a root in
+// its own right even when no roots entry enumerates it.
+//
+// This runs BEFORE Probe on purpose: an ineligible root must not be stat'ed at
+// all — its answer would be wrong, and on a cold mount it costs ~500ms to
+// produce.
+func (sc RepoScope) Filter(rs []Root) []Root {
+	if !sc.Active() {
+		return rs
+	}
+	out := make([]Root, 0, len(rs)+1)
+	for _, r := range rs {
+		if sc.Allows(r.Path) {
+			out = append(out, r)
+		}
+	}
+	if sc.hasAlias && !slices.ContainsFunc(out, func(r Root) bool { return resolve.SameDir(r.Path, sc.alias.Path) }) {
+		out = append(out, sc.alias)
 	}
 	return out
 }

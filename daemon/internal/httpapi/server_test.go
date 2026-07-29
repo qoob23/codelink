@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,6 +41,18 @@ const testPort = 47391
 // configured root.
 func testServer(t *testing.T, allowedRoot, nvimBin string) *Server {
 	t.Helper()
+	return testServerWith(t, fmt.Sprintf(`{
+      "version":1,"extensionId":"testext",
+      "providers":[{"id":"t","hosts":["*.example.com"],
+        "match":[{"path":"^/src/(?P<repoPath>.+)$"}],
+        "hash":"^L(?P<line>\\d+)$",
+        "projectMarkers":["lib"],
+        "roots":[{"path":%q}]}]}`, allowedRoot), nvimBin)
+}
+
+// testServerWith is testServer for the cases that need their own providers.json.
+func testServerWith(t *testing.T, cfg, nvimBin string) *Server {
+	t.Helper()
 	base := t.TempDir()
 	state := filepath.Join(base, "state")
 	inst := filepath.Join(state, "instances")
@@ -50,13 +63,6 @@ func testServer(t *testing.T, allowedRoot, nvimBin string) *Server {
 		}
 	}
 	cfgPath := filepath.Join(base, "providers.json")
-	cfg := fmt.Sprintf(`{
-      "version":1,"extensionId":"testext",
-      "providers":[{"id":"t","hosts":["*.example.com"],
-        "match":[{"path":"^/src/(?P<repoPath>.+)$"}],
-        "hash":"^L(?P<line>\\d+)$",
-        "projectMarkers":["lib"],
-        "roots":[{"path":%q}]}]}`, allowedRoot)
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -346,6 +352,212 @@ func TestSpawnWorkdirRejectsSymlinkEscape(t *testing.T) {
 				t.Errorf("spawnWorkdir(%q) = %q, want %q", tc.repoPath, got, tc.want)
 			}
 		})
+	}
+}
+
+// repoServer builds a server over two same-shaped checkouts plus one that the
+// roots glob cannot reach, and a provider that captures a repo group on /code/
+// but not on /src/ — so one config exercises both the filtered and the
+// historical unfiltered path.
+//
+// aliasRel, when set, is registered as the repoAliases target for "widgets".
+func repoServer(t *testing.T, aliasRel string) (srv *Server, base string) {
+	t.Helper()
+	base = t.TempDir()
+	for _, d := range []string{"checkouts/synapses", "checkouts/codelink", "elsewhere/neurons"} {
+		dir := filepath.Join(base, filepath.FromSlash(d), "lib")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "x.go"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	aliases := ""
+	if aliasRel != "" {
+		aliases = fmt.Sprintf(`,"repoAliases":{"widgets":%q}`,
+			filepath.Join(base, filepath.FromSlash(aliasRel)))
+	}
+	bin, _ := fakeNvim(t, base, `{"ok":true}`)
+	srv = testServerWith(t, fmt.Sprintf(`{
+      "version":1,"extensionId":"testext",
+      "providers":[{"id":"t","hosts":["*.example.com"],
+        "match":[
+          {"path":"^/code/(?P<repo>[^/]+)/(?P<repoPath>.+)$"},
+          {"path":"^/src/(?P<repoPath>.+)$"}],
+        "projectMarkers":["lib"],
+        "roots":[{"glob":%q}]%s}]}`,
+		filepath.Join(base, "checkouts", "*"), aliases), bin)
+	return srv, base
+}
+
+func candidateRoots(resp resolveResponse) []string {
+	out := make([]string, 0, len(resp.RootCandidates))
+	for _, c := range resp.RootCandidates {
+		out = append(out, filepath.Base(c.Root))
+	}
+	slices.Sort(out)
+	return out
+}
+
+func instanceRoots(resp resolveResponse) []string {
+	out := make([]string, 0, len(resp.OpenInstances))
+	for _, i := range resp.OpenInstances {
+		out = append(out, filepath.Base(i.Root))
+	}
+	slices.Sort(out)
+	return out
+}
+
+// TestResolveFiltersByRepo is the regression for a link to repo A opening the
+// same-named file in checkout B — through the root candidates AND through an
+// nvim already running in the wrong checkout, which outranks every candidate.
+func TestResolveFiltersByRepo(t *testing.T) {
+	srv, base := repoServer(t, "")
+	addInstance(t, srv, "synapses", filepath.Join(base, "checkouts", "synapses"))
+	addInstance(t, srv, "codelink", filepath.Join(base, "checkouts", "codelink"))
+
+	tests := []struct {
+		name          string
+		url           string
+		wantCands     []string
+		wantInstances []string
+		wantWarning   string
+	}{
+		{
+			name: "repo picks its own checkout", url: "https://a.example.com/code/synapses/lib/x.go",
+			wantCands: []string{"synapses"}, wantInstances: []string{"synapses"},
+		},
+		{
+			name: "and the other repo picks the other one", url: "https://a.example.com/code/codelink/lib/x.go",
+			wantCands: []string{"codelink"}, wantInstances: []string{"codelink"},
+		},
+		{
+			name: "the repo name is matched case-insensitively", url: "https://a.example.com/code/Synapses/lib/x.go",
+			wantCands: []string{"synapses"}, wantInstances: []string{"synapses"},
+		},
+		{
+			// The match entry captures no repo group, so nothing is filtered —
+			// this is the behaviour every existing provider keeps.
+			name:      "a URL with no repo group still reaches every checkout",
+			url:       "https://a.example.com/src/lib/x.go",
+			wantCands: []string{"codelink", "synapses"}, wantInstances: []string{"codelink", "synapses"},
+		},
+		{
+			name:        "a repo with no checkout is reported, not fallen back from",
+			url:         "https://a.example.com/code/ghost/lib/x.go",
+			wantWarning: `repo "ghost" matched no local checkout`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := srv.resolveURL(tc.url)
+			if !resp.OK {
+				t.Fatalf("resolve(%q) not ok: %+v", tc.url, resp)
+			}
+			if got := candidateRoots(resp); !slices.Equal(got, tc.wantCands) {
+				t.Errorf("rootCandidates = %v, want %v", got, tc.wantCands)
+			}
+			if got := instanceRoots(resp); !slices.Equal(got, tc.wantInstances) {
+				t.Errorf("openInstances = %v, want %v", got, tc.wantInstances)
+			}
+			warned := slices.Contains(resp.Warnings, tc.wantWarning)
+			if tc.wantWarning != "" && !warned {
+				t.Errorf("warnings = %v, want one of them to be %q", resp.Warnings, tc.wantWarning)
+			}
+		})
+	}
+}
+
+// TestResolveRepoWarningDistinguishesMissingCheckoutFromMissingFile pins the two
+// apart: both end in an empty answer, but "the repo has no checkout here" and
+// "this checkout does not have that file (yet)" send the reader after entirely
+// different things.
+func TestResolveRepoWarningDistinguishesMissingCheckoutFromMissingFile(t *testing.T) {
+	srv, _ := repoServer(t, "")
+	const genericWarning = "no local checkout contains this path"
+
+	tests := []struct {
+		name     string
+		url      string
+		wantRepo string // the repo warning expected verbatim, "" for none at all
+	}{
+		{
+			name: "the checkout exists, the file does not",
+			url:  "https://a.example.com/code/synapses/lib/missing.go",
+		},
+		{
+			name:     "no checkout survives the filter",
+			url:      "https://a.example.com/code/ghost/lib/x.go",
+			wantRepo: `repo "ghost" matched no local checkout`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := srv.resolveURL(tc.url)
+			if !resp.OK {
+				t.Fatalf("resolve(%q) not ok: %+v", tc.url, resp)
+			}
+			// Both cases end in nothing to open, so the generic warning is owed
+			// either way; only the repo one is in question.
+			if !slices.Contains(resp.Warnings, genericWarning) {
+				t.Errorf("warnings = %v, want the generic %q", resp.Warnings, genericWarning)
+			}
+			anyRepo := slices.ContainsFunc(resp.Warnings, func(w string) bool {
+				return strings.HasPrefix(w, `repo "`)
+			})
+			switch {
+			case tc.wantRepo == "" && anyRepo:
+				t.Errorf("warnings = %v, want no repo warning: the checkout was there, the file was not", resp.Warnings)
+			case tc.wantRepo != "" && !slices.Contains(resp.Warnings, tc.wantRepo):
+				t.Errorf("warnings = %v, want one of them to be %q", resp.Warnings, tc.wantRepo)
+			}
+		})
+	}
+}
+
+// TestResolveRepoAliasReachesUnenumeratedCheckout covers the alias half: the
+// target is named after nothing in particular and no roots entry enumerates it,
+// yet it is the only checkout that may serve the repo.
+func TestResolveRepoAliasReachesUnenumeratedCheckout(t *testing.T) {
+	srv, base := repoServer(t, "elsewhere/neurons")
+	alias := filepath.Join(base, "elsewhere", "neurons")
+	addInstance(t, srv, "neurons", alias)
+	addInstance(t, srv, "synapses", filepath.Join(base, "checkouts", "synapses"))
+
+	resp := srv.resolveURL("https://a.example.com/code/widgets/lib/x.go")
+	if !resp.OK {
+		t.Fatalf("resolve not ok: %+v", resp)
+	}
+	if got := candidateRoots(resp); !slices.Equal(got, []string{"neurons"}) {
+		t.Errorf("rootCandidates = %v, want [neurons]", got)
+	}
+	if got := instanceRoots(resp); !slices.Equal(got, []string{"neurons"}) {
+		t.Errorf("openInstances = %v, want [neurons]", got)
+	}
+}
+
+// TestOpenNewAcceptsAliasTarget checks the /open allowlist grew with the
+// aliases: a checkout the daemon offers as a candidate but refuses to spawn in
+// would be a dead button. repoPath is deliberately missing so the request stops
+// at the file check, before any terminal is spawned.
+func TestOpenNewAcceptsAliasTarget(t *testing.T) {
+	srv, base := repoServer(t, "elsewhere/neurons")
+
+	resp := srv.open(context.Background(), openRequest{
+		Mode: "new", Target: filepath.Join(base, "elsewhere", "neurons"),
+		RepoPath: "no/such/file.go", Focus: noFocus(),
+	})
+	if resp.OK || resp.Code != CodeFileNotFound {
+		t.Errorf("alias target: want FILE_NOT_FOUND (i.e. past the allowlist), got %+v", resp)
+	}
+	// Its parent is neither a root nor an alias target, so it stays rejected.
+	resp = srv.open(context.Background(), openRequest{
+		Mode: "new", Target: filepath.Join(base, "elsewhere"),
+		RepoPath: "neurons/lib/x.go", Focus: noFocus(),
+	})
+	if resp.OK || resp.Code != CodeRootNotAllowed {
+		t.Errorf("alias parent: want ROOT_NOT_ALLOWED, got %+v", resp)
 	}
 }
 

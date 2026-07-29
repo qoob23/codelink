@@ -156,6 +156,8 @@ Real 200 body for
   "ok": true,
   "parsed": {
     "provider": "example",
+    "repo": "widgets",       // absent unless the provider captures a repo group;
+                             // when present, only that repo's checkout is offered
     "repoPath": "src/pkg/widget/lib/main.go",
     "line": 3,
     "endLine": 7,            // null when the link carries no range

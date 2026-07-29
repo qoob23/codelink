@@ -48,6 +48,12 @@ type Provider struct {
 	ProjectMarkers []string     `json:"projectMarkers"`
 	Roots          []RootSpec   `json:"roots"`
 
+	// RepoAliases maps a repo name — as captured by the "repo" group — onto the
+	// local checkout serving it, for the checkouts whose directory is not named
+	// after the repository. Targets are enumerated from providers.json exactly
+	// like roots, so they carry the same standing.
+	RepoAliases map[string]string `json:"repoAliases"`
+
 	hashRe *regexp.Regexp
 }
 
@@ -72,7 +78,12 @@ type Config struct {
 
 // Parsed is what a URL decomposes into.
 type Parsed struct {
-	Provider     string  `json:"provider"`
+	Provider string `json:"provider"`
+	// Repo is the repository name, when the provider captures one. Absent means
+	// the URL says nothing about which checkout it belongs to — and omitempty
+	// keeps the payload of a provider that captures no repo group byte-identical
+	// to what it was before the field existed.
+	Repo         string  `json:"repo,omitempty"`
 	RepoPath     string  `json:"repoPath"`
 	Line         *int    `json:"line"`
 	EndLine      *int    `json:"endLine"`
@@ -118,6 +129,9 @@ func (c *Config) compile() error {
 		if p.ID == "" {
 			return fmt.Errorf("provider with empty id")
 		}
+		if err := p.checkRepoAliases(); err != nil {
+			return err
+		}
 		if p.Hash != "" {
 			re, err := regexp.Compile(p.Hash)
 			if err != nil {
@@ -142,6 +156,50 @@ func (c *Config) compile() error {
 		}
 	}
 	return nil
+}
+
+// checkRepoAliases rejects entries no consumer could act on.
+//
+// Duplicate names are an error rather than a last-one-wins because RepoAlias
+// matches case-insensitively: two names differing only in case would otherwise
+// make the answer depend on Go's randomised map iteration order.
+func (p *Provider) checkRepoAliases() error {
+	seen := make(map[string]bool, len(p.RepoAliases))
+	for name, target := range p.RepoAliases {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("provider %s: repoAliases has an entry with an empty repo name", p.ID)
+		}
+		if strings.TrimSpace(target) == "" {
+			return fmt.Errorf("provider %s: repoAliases[%q]: empty path", p.ID, name)
+		}
+		key := foldRepo(name)
+		if seen[key] {
+			return fmt.Errorf("provider %s: repoAliases declares %q twice (names are case-insensitive)", p.ID, key)
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+// foldRepo is the single case fold repo names are compared under. Validation and
+// lookup must agree on it: strings.EqualFold and strings.ToLower disagree on
+// exotic folds (U+017F ſ folds to "s" for one and not the other), which would
+// let two names the check accepted as distinct both answer to one lookup.
+func foldRepo(name string) string { return strings.ToLower(name) }
+
+// RepoAlias returns the checkout configured for a repo name, or "" when none is.
+// The name arrives verbatim from a URL, so the comparison is case-insensitive.
+func (p *Provider) RepoAlias(repo string) string {
+	if repo == "" {
+		return ""
+	}
+	want := foldRepo(repo)
+	for name, target := range p.RepoAliases {
+		if foldRepo(name) == want {
+			return target
+		}
+	}
+	return ""
 }
 
 // HostMatches reports whether host is covered by pattern.
@@ -245,6 +303,9 @@ func (p *Provider) parseURL(u *url.URL) (*Parsed, bool) {
 		if out.RepoPath == "" {
 			continue
 		}
+		// repo is optional: a provider that captures none keeps resolving against
+		// every configured root.
+		out.Repo, _ = get("repo")
 		out.Line = intGroup(get, "line")
 		out.EndLine = intGroup(get, "endLine")
 		out.Col = intGroup(get, "col")

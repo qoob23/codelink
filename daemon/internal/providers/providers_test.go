@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -42,14 +43,20 @@ const testConfigJSON = `{
   ]
 }`
 
-func loadTestConfig(t *testing.T) *Config {
+// loadJSON writes body to a throwaway file and loads it, so a test can state the
+// config it needs inline.
+func loadJSON(t *testing.T, body string) (*Config, error) {
 	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "providers.json")
-	if err := os.WriteFile(p, []byte(testConfigJSON), 0o644); err != nil {
+	p := filepath.Join(t.TempDir(), "providers.json")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := Load(p)
+	return Load(p)
+}
+
+func loadTestConfig(t *testing.T) *Config {
+	t.Helper()
+	cfg, err := loadJSON(t, testConfigJSON)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -294,6 +301,116 @@ func deref[T any](p *T) any {
 		return nil
 	}
 	return *p
+}
+
+// repoConfigJSON captures the repository name next to the path, and aliases one
+// repo onto a checkout that is not named after it.
+const repoConfigJSON = `{
+  "version": 1,
+  "extensionId": "abcdefghijklmnopabcdefghijklmnop",
+  "providers": [
+    {
+      "id": "example",
+      "hosts": ["*.example.com"],
+      "match": [
+        { "path": "^/code/(?P<repo>[^/]+)/(?P<repoPath>.+)$" },
+        { "path": "^/legacy/(?P<repoPath>.+)$" }
+      ],
+      "hash": "^L(?P<line>\\d+)$",
+      "repoAliases": { "Synapses": "~/checkouts/neurons" }
+    }
+  ]
+}`
+
+func TestParseRepoGroup(t *testing.T) {
+	cfg, err := loadJSON(t, repoConfigJSON)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		url      string
+		wantRepo string
+		wantPath string
+	}{
+		{
+			name: "repo group is captured", url: "https://a.example.com/code/synapses/lib/x.go",
+			wantRepo: "synapses", wantPath: "lib/x.go",
+		},
+		{
+			name: "repo group survives a fragment", url: "https://a.example.com/code/synapses/lib/x.go#L12",
+			wantRepo: "synapses", wantPath: "lib/x.go",
+		},
+		{
+			// The entry that matches declares no repo group, so the URL says
+			// nothing about which checkout it belongs to.
+			name: "absent repo group yields an empty repo", url: "https://a.example.com/legacy/lib/x.go",
+			wantRepo: "", wantPath: "lib/x.go",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := cfg.Parse(tc.url)
+			if !ok {
+				t.Fatalf("Parse(%q) did not match", tc.url)
+			}
+			if got.Repo != tc.wantRepo {
+				t.Errorf("repo = %q, want %q", got.Repo, tc.wantRepo)
+			}
+			if got.RepoPath != tc.wantPath {
+				t.Errorf("repoPath = %q, want %q", got.RepoPath, tc.wantPath)
+			}
+		})
+	}
+}
+
+func TestRepoAliasIsCaseInsensitive(t *testing.T) {
+	cfg, err := loadJSON(t, repoConfigJSON)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.Providers[0]
+	for _, name := range []string{"Synapses", "synapses", "SYNAPSES"} {
+		if got := p.RepoAlias(name); got != "~/checkouts/neurons" {
+			t.Errorf("RepoAlias(%q) = %q, want the configured target", name, got)
+		}
+	}
+	for _, name := range []string{"", "other"} {
+		if got := p.RepoAlias(name); got != "" {
+			t.Errorf("RepoAlias(%q) = %q, want no alias", name, got)
+		}
+	}
+}
+
+func TestLoadValidatesRepoAliases(t *testing.T) {
+	tests := []struct {
+		name    string
+		aliases string
+		wantErr bool
+	}{
+		{name: "well-formed entry", aliases: `{"synapses":"~/checkouts/neurons"}`},
+		{name: "no aliases at all", aliases: `{}`},
+		{name: "empty target", aliases: `{"synapses":""}`, wantErr: true},
+		{name: "blank target", aliases: `{"synapses":"   "}`, wantErr: true},
+		{name: "empty repo name", aliases: `{"":"~/checkouts/neurons"}`, wantErr: true},
+		{
+			// RepoAlias matches case-insensitively, so these two would resolve
+			// by map iteration order.
+			name:    "names differing only in case",
+			aliases: `{"synapses":"~/a","Synapses":"~/b"}`, wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"version":1,"providers":[{"id":"x","hosts":["a.com"],
+			  "match":[{"path":"^/(?P<repoPath>.+)$"}],"repoAliases":%s}]}`, tc.aliases)
+			_, err := loadJSON(t, body)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("Load error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
 }
 
 func TestHostMatches(t *testing.T) {

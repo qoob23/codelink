@@ -25,8 +25,8 @@ Paste this, change `~/src/*` to wherever you keep clones, and run
       "id": "github",
       "hosts": ["github.com"],
       "match": [
-        { "path": "^/[^/]+/[^/]+/(?:blob|blame)/[^/]+/(?P<repoPath>.+)$" },
-        { "path": "^/[^/]+/[^/]+/raw/[^/]+/(?P<repoPath>.+)$" }
+        { "path": "^/[^/]+/(?P<repo>[^/]+)/(?:blob|blame)/[^/]+/(?P<repoPath>.+)$" },
+        { "path": "^/[^/]+/(?P<repo>[^/]+)/raw/[^/]+/(?P<repoPath>.+)$" }
       ],
       "hash": "^L(?P<line>\\d+)(?:-L(?P<endLine>\\d+))?$",
       "projectMarkers": ["src", "lib", "test", "cmd", "internal"],
@@ -38,19 +38,22 @@ Paste this, change `~/src/*` to wherever you keep clones, and run
 
 Two things about this shape are worth understanding before you adapt it.
 
-**`repoPath` is repo-*relative*, so the owner and repo segments are skipped, not
-captured.** `/qoob23/codelink/blob/main/daemon/main.go` yields
-`daemon/main.go` — a path that means something inside a checkout. There is no
-`repo` group, by design: the daemon finds the file by probing roots, not by
-trusting the URL's idea of which repo you cloned where.
+**`repoPath` is repo-*relative*** — the owner segment is skipped, the repo
+segment is captured as `repo`. `/qoob23/codelink/blob/main/daemon/main.go`
+yields `repo` = `codelink` and `repoPath` = `daemon/main.go` — a path that
+means something inside a checkout. The daemon still finds the file by probing
+roots; `repo` decides *which* roots are worth probing.
 
-**A glob root therefore matches on the path alone.** With `~/src/*`, a link to
-`daemon/main.go` resolves to exactly one clone, but a link to `README.md`
-matches *every* clone that has one. That is not a failure — candidates are
-ranked by whether the root already has an open Neovim, then by recency, and
-shift-click shows them in a picker — but it is why a root glob over hundreds of
-unrelated clones gives worse suggestions than one over the dozen you actually
-work in.
+**`repo` is a filter, not a hint.** When captured, only roots whose directory
+basename equals it (compared case-insensitively) are probed — plus the
+checkout named by `repoAliases`, if one is configured. A link into `codelink`
+can never resolve into a checkout named anything else, no matter how many
+checkouts contain a same-named `README.md`. The flip side: a repo cloned under
+a different directory name matches nothing until you add a `repoAliases`
+entry, and until then its links show no button. Omit the group entirely and
+the provider behaves the old way: every root is probed on the path alone, and
+same-named files in unrelated checkouts all become candidates, ranked by open
+instance and recency.
 
 Verify any provider you write with:
 
@@ -108,6 +111,7 @@ toggle.
 | `refParam` | string | Query parameter carrying a revision/branch (e.g. `rev`). |
 | `defaultRef` | string | The ref that means "current". Anything else sets `refIsDefault:false` and adds a warning that the local file may differ. |
 | `projectMarkers` | []string | Directory names that mark the start of source inside a package (`lib`, `src`, `test`, …). The *project* is the longest path prefix ending immediately before the first of these. |
+| `repoAliases` | object | Optional map of repo name → checkout path (`~` expanded), for clones whose directory name differs from the repo name in the URL. The target is eligible for that name even if no `roots` entry enumerates it, and it joins the `mode:"new"` allowlist like any root. Keys are compared case-insensitively. |
 | `roots` | []object | Where local checkouts live — see below. |
 
 ## `match` entries
@@ -133,6 +137,7 @@ Recognised group names — everything else is ignored:
 | Group | Meaning |
 | --- | --- |
 | `repoPath` | **Required.** Repo-relative path to the file. |
+| `repo` | Repo name from the URL. Filters roots and open instances to those whose basename matches it (case-insensitively) before probing — see `repoAliases` for clones named differently. Absent → no filtering. |
 | `line`, `endLine` | 1-based line range. Out-of-range values are clamped by Neovim, not here. |
 | `col` | Column, currently parsed but unused. |
 | `side` | `L`/`R` in a diff view. |
