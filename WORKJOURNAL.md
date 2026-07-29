@@ -87,3 +87,26 @@ Decisions and why. Not documentation — see `README.md` and
   string when the spawn handshake timed out, so a failed shift-click showed a
   green checkmark. Also raised the budget 500 ms → 5 s: a bare editor takes
   ~281 ms to register *before* the terminal is involved.
+
+## 2026-07-29 — extracted from the dotfiles tree
+
+- **Own repo, not a directory in the dotfiles.** The daemon and extension are a
+  program with a build step, tests and a release surface; the dotfiles tree is
+  for files that get stowed into place. History was replayed commit by commit
+  with the `xdg-config/.config/codelink/` prefix stripped, rather than started
+  fresh, so the reasoning above stays attached to the code it explains.
+- **No checkout path appears in tracked files.** Extraction exposed how much had
+  quietly assumed `~/.config/codelink`. The scripts now resolve from their own
+  location and the daemon takes `$CODELINK_EXTENSION_DIR`; the LaunchAgent plist
+  became a template rendered at install time, since launchd expands neither `~`
+  nor `$HOME` and a literal path there would re-pin the whole thing to one
+  machine.
+- **The Neovim half moved in, as `nvim/`.** It was two files in a personal
+  config, which is what let the daemon and the editor drift apart in the first
+  place — the registry schema is a contract with three writers and one reader.
+  Keeping the plugin beside `daemon/` means a change to the entry format is one
+  commit that touches both sides. It stays a plain runtimepath directory with no
+  `setup()`, so nothing about a plugin manager is assumed.
+- **`root_markers` deliberately stayed in `nvim.json`.** It is the one setting
+  that would name your VCS, and the whole point of the untracked-config split is
+  that publishing this tree reveals nothing about where you work.

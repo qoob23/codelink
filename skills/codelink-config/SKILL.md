@@ -8,12 +8,12 @@ description: Use when configuring, validating or debugging codelink — the daem
 ## The one thing to understand first
 
 Every site-specific fact lives in **untracked** files. The daemon, extension and
-Neovim module contain none of it, by design.
+Neovim plugin contain none of it, by design.
 
 | File | Read by | Holds |
 | --- | --- | --- |
 | `~/.local/share/codelink/providers.json` | daemon | hosts, URL patterns, checkout roots, extension id, injection scope |
-| `~/.local/share/codelink/nvim.json` | Neovim module | `root_markers` |
+| `~/.local/share/codelink/nvim.json` | Neovim plugin | `root_markers` |
 | `~/.local/share/codelink/codelink-ext.pem` | `bootstrap.sh` | extension keypair (**secret**) |
 
 Never "fix" a problem by putting a hostname or repo path into the daemon,

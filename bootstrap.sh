@@ -87,7 +87,7 @@ cat <<EOF
 Next:
   1. Edit $PROVIDERS   (schema: $REPO/providers.schema.md)
   2. Edit $NVIMCFG     if your checkouts are marked by something other than .git
-  3. Put the Neovim half in place — see $REPO/NEOVIM.md
+  3. Add $REPO/nvim to your Neovim runtimepath — see $REPO/nvim/README.md
   4. $REPO/install.sh
   5. Load the extension unpacked in each browser from:
        $REPO/extension

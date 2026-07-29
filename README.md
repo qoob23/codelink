@@ -23,11 +23,16 @@ this repo.
 | --- | --- |
 | `daemon/` | Go module, stdlib only. Subcommands `serve`, `build-manifest`, `doctor`. |
 | `extension/` | Chromium MV3 extension, loaded unpacked (works in any Chromium build). |
+| `nvim/` | Neovim plugin. Registers the instance and answers open requests — see `nvim/README.md`. |
 | `launchd/` | LaunchAgent plist **template**, rendered into `~/Library/LaunchAgents` by the installer. |
 | `bootstrap.sh` | First-run setup: keypair + starter configs. Never overwrites. |
 | `install.sh` | Build → codesign → generate manifest → render plist → (re)load the agent. Idempotent. |
 | `skills/` | Agent skill for configuring and debugging codelink — see below. |
-| `NEOVIM.md` | The Neovim half: the contract the daemon speaks, and a config to copy. |
+
+Three parts, one contract each: the extension decides which links get a button,
+the daemon turns a URL into a path and picks an instance, the plugin makes an
+instance findable and opens the buffer. They live in one repo because the
+contracts between them are what would drift if they did not.
 
 The checkout can live anywhere. Nothing tracked here names a checkout path:
 `bootstrap.sh` and `install.sh` resolve from their own location, the daemon
@@ -47,7 +52,7 @@ daemon logs.
 
 ### Nothing here knows your hosts
 
-The daemon, the extension and the Neovim module contain no reference to any
+The daemon, the extension and the Neovim plugin contain no reference to any
 particular code-hosting site, VCS or repository layout — deliberately, so this
 tree can be published or shared as-is. Every site-specific fact lives in two
 untracked files under `~/.local/share/codelink/`:
@@ -55,13 +60,9 @@ untracked files under `~/.local/share/codelink/`:
 | File | Read by | Contents |
 | --- | --- | --- |
 | `providers.json` | daemon | Hosts, URL patterns, checkout roots. See `providers.schema.md`. |
-| `nvim.json` | Neovim module | `root_markers` — the directory names that mark a checkout root, e.g. `[".git", ".jj"]` plus whatever your VCS uses. |
+| `nvim.json` | Neovim plugin | `root_markers` — the directory names that mark a checkout root, e.g. `[".git", ".jj"]` plus whatever your VCS uses. |
 
-The Neovim module itself is not tracked here either — it belongs in your own
-`~/.config/nvim`. `NEOVIM.md` specifies the contract and carries a reference
-implementation to copy.
-
-`nvim.json` is optional; without it the module falls back to plain VCS markers
+`nvim.json` is optional; without it the plugin falls back to plain VCS markers
 (`.git`, `.jj`, `.hg`, `.svn`). `vim.g.codelink_root_markers` overrides both.
 
 ## Install on a new machine
@@ -98,9 +99,15 @@ To keep the same ID as an existing machine, copy `codelink-ext.pem` across
 regenerates `extension_key.txt` from it. Generating a fresh keypair is fine too,
 as long as you update `extensionId` in `providers.json` to the new value.
 
-The Neovim half is two files in your own config — see `NEOVIM.md`. Once
-`plugin/codelink.lua` is in place it registers every instance you start;
-instances started before that stay invisible until restarted.
+Last, add `nvim/` to your Neovim runtimepath — see `nvim/README.md`. With
+lazy.nvim that is one line:
+
+```lua
+{ dir = vim.fn.expand('<checkout>/nvim'), name = 'codelink', lazy = false }
+```
+
+It registers every instance you start; instances started before that stay
+invisible until restarted.
 
 ## Upgrading an existing install
 

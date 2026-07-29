@@ -1,0 +1,140 @@
+# codelink.nvim
+
+The editor half of codelink: a self-contained Neovim plugin that makes this
+instance discoverable by the daemon and answers its open requests.
+
+Without it the browser button still appears, the daemon finds no instance, and
+every click falls through to spawning a new window.
+
+```
+nvim/
+├── plugin/codelink.lua      autocmds + :CodelinkStatus
+└── lua/codelink/init.lua    registry, socket, RPC entrypoint
+```
+
+No `setup()` call, no options table — it registers on `VimEnter` and needs
+nothing from you.
+
+## Install
+
+The plugin lives in a subdirectory of the codelink repo rather than in one of
+its own, because it is one side of a contract whose other side is `daemon/`;
+splitting them across repos would let them drift. You already need the checkout
+on disk to build the daemon and load the extension unpacked, so point your
+plugin manager at it locally.
+
+**lazy.nvim**
+
+```lua
+{ dir = vim.fn.expand('<checkout>/nvim'), name = 'codelink', lazy = false }
+```
+
+`lazy = false` is required: the plugin must be loaded by `VimEnter`, and a
+lazy-loaded spec with no trigger never gets there.
+
+**No plugin manager**
+
+```lua
+vim.opt.runtimepath:append(vim.fn.expand('<checkout>/nvim'))
+```
+
+Requires Neovim 0.11+ (`vim.uv`, `vim.hl.range`).
+
+## Configuration
+
+One setting, and it is deliberately not in Lua: `root_markers`, the directory
+names that mark a checkout root.
+
+```jsonc
+// ~/.local/share/codelink/nvim.json
+{ "root_markers": [".git", ".jj"] }
+```
+
+It lives in the same untracked directory the daemon reads `providers.json` from,
+so no knowledge of a particular VCS or host ends up in a file you would publish.
+The file is optional — without it the fallback is `.git`, `.jj`, `.hg`, `.svn`.
+`vim.g.codelink_root_markers` overrides both, for a one-off session.
+
+## Checking it works
+
+```vim
+:CodelinkStatus
+```
+
+prints the registry path, `on disk: yes`, and the entry for this instance. From
+a shell:
+
+```sh
+codelink doctor            # lists live instances with their labels and sockets
+ls ~/.local/state/codelink/instances/
+```
+
+An instance started before the plugin was installed stays invisible until it is
+restarted.
+
+## The contract
+
+This is what the daemon relies on. It is written down so the plugin can be
+rewritten — or ported to another editor — without reading the Go side.
+
+### 1. Registry entry — `~/.local/state/codelink/instances/<pid>.json`
+
+Written on `VimEnter`, refreshed on `DirChanged` / `FocusGained` / `VimResume`,
+deleted on `VimLeavePre`. **Write it atomically** (temp file + rename): the
+daemon reads these on every hover and a torn write breaks the parse.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `v` | int | Schema version. `1`. |
+| `pid` | int | `getpid()`. The daemon drops entries whose process is gone. |
+| `servername` | string \| null | The explicit socket this instance listens on (below). |
+| `auto_servername` | string \| null | `vim.v.servername`, used as a fallback socket. |
+| `cwd` | string | Current `getcwd()`, **physical** (symlink-resolved). |
+| `launch_cwd` | string | `cwd` at `VimEnter`, never updated. Join key for the terminal's OSC 7 cwd. |
+| `root` | string | Checkout root found by walking up from `cwd`. |
+| `label` | string | `basename(root)`. Shown in the browser button's menu. |
+| `spawn_id` | string \| null | `$CODELINK_SPAWN_ID`, set by the daemon on instances it spawned. |
+| `started_at` | int | Unix seconds. |
+| `last_focused` | int | Unix seconds, bumped on every touch. Drives "most recent instance". |
+
+The daemon tries `servername` first, then `auto_servername`, taking the first
+socket that exists on disk; an entry with neither is pruned.
+
+`cwd` and `launch_cwd` must be physical paths — `vim.fn.getcwd()` already is.
+The daemon canonicalises both sides before comparing, because a shell's OSC 7
+`$PWD` is logical and checkout roots are routinely symlinked.
+
+### 2. Explicit socket — `~/.local/state/codelink/sock/<pid>.sock`
+
+`vim.fn.serverstart(sock)` in addition to the automatic socket. The predictable
+path is what lets the daemon clean up after a `SIGKILL`ed instance — Neovim does
+not unlink its listen socket when it dies, so the daemon removes any socket in
+this directory whose owning pid is gone. Unlink a leftover socket before calling
+`serverstart`, or a recycled pid makes it fail.
+
+### 3. Remote entrypoint — `_G.__codelink_rpc(payload) -> string`
+
+Invoked as:
+
+```sh
+nvim --server <sock> --remote-expr "luaeval('_G.__codelink_rpc(_A)', '<json>')"
+```
+
+Request: `{"path": "<absolute path>", "line": 12, "end_line": 20}` — `line` and
+`end_line` optional.
+Response: `{"ok": true}` or `{"ok": false, "error": "..."}`, as a JSON **string**.
+
+It must never raise: `--remote-expr` turns a Lua error into an opaque non-zero
+exit the daemon cannot report usefully.
+
+Do the buffer work inside `vim.schedule`. Answering on the RPC caller's stack
+blocks on Neovim's UI state — a modal prompt or operator-pending mode deadlocks
+the hover.
+
+## Security note
+
+The daemon's root allowlist is not cosmetic. `mode:"new"` targets must sit
+inside a root enumerated from `providers.json`, compared after resolving
+symlinks. If your config sets `opt.exrc = true`, launching Neovim in an
+arbitrary directory that happens to contain a `.nvim.lua` would be remote code
+execution — the allowlist is what prevents a link from choosing that directory.

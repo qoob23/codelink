@@ -1,143 +1,11 @@
-# The Neovim half
-
-The daemon does not talk to Neovim over anything Neovim provides out of the box.
-It needs your config to do two things: **advertise** each running instance in a
-file registry, and **answer** a single remote function. Without them the button
-appears, the daemon finds no instance, and every click falls through to spawning
-a new window.
-
-These files are deliberately not tracked in this repo — they belong to your own
-`~/.config/nvim`, next to the rest of your config. What *is* fixed is the
-contract below; the implementation at the end is a reference you can copy
-verbatim.
-
-## The contract
-
-### 1. Registry entry — `~/.local/state/codelink/instances/<pid>.json`
-
-Written on `VimEnter`, refreshed on `DirChanged` / `FocusGained` / `VimResume`,
-deleted on `VimLeavePre`. **Write it atomically** (temp file + rename): the
-daemon reads these on every hover and a torn write breaks the parse.
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `v` | int | Schema version. `1`. |
-| `pid` | int | `getpid()`. The daemon drops entries whose process is gone. |
-| `servername` | string \| null | The explicit socket this instance listens on (below). |
-| `auto_servername` | string \| null | `vim.v.servername`, used as a fallback socket. |
-| `cwd` | string | Current `getcwd()`, **physical** (symlink-resolved). |
-| `launch_cwd` | string | `cwd` at `VimEnter`, never updated. Join key for the terminal's OSC 7 cwd. |
-| `root` | string | Checkout root found by walking up from `cwd`. |
-| `label` | string | `basename(root)`. Shown in the browser button's menu. |
-| `spawn_id` | string \| null | `$CODELINK_SPAWN_ID`, set by the daemon on instances it spawned. |
-| `started_at` | int | Unix seconds. |
-| `last_focused` | int | Unix seconds, bumped on every touch. Drives "most recent instance". |
-
-The daemon tries `servername` first, then `auto_servername`, taking the first
-socket that exists on disk; an entry with neither is pruned.
-
-`cwd` and `launch_cwd` must be physical paths — `vim.fn.getcwd()` already is.
-The daemon canonicalises both sides before comparing, because a shell's OSC 7
-`$PWD` is logical and checkout roots are routinely symlinked.
-
-### 2. Explicit socket — `~/.local/state/codelink/sock/<pid>.sock`
-
-`vim.fn.serverstart(sock)` in addition to the automatic socket. The predictable
-path is what lets the daemon clean up after a `SIGKILL`ed instance — Neovim does
-not unlink its listen socket when it dies, so the daemon removes any socket in
-this directory whose owning pid is gone. Unlink a leftover socket before calling
-`serverstart`, or a recycled pid makes it fail.
-
-### 3. Remote entrypoint — `_G.__codelink_rpc(payload) -> string`
-
-Invoked as:
-
-```sh
-nvim --server <sock> --remote-expr "luaeval('_G.__codelink_rpc(_A)', '<json>')"
-```
-
-Request: `{"path": "<absolute path>", "line": 12, "end_line": 20}` — `line` and
-`end_line` optional.
-Response: `{"ok": true}` or `{"ok": false, "error": "..."}`, as a JSON **string**.
-It must never raise: `--remote-expr` turns a Lua error into an opaque non-zero
-exit the daemon cannot report usefully.
-
-Do the buffer work inside `vim.schedule`. Answering on the RPC caller's stack
-blocks on Neovim's UI state — a modal prompt or operator-pending mode deadlocks
-the hover.
-
-### 4. Root markers — `~/.local/share/codelink/nvim.json`
-
-`root_markers` is a list of directory names that mark a checkout root, e.g.
-`[".git", ".jj"]`. The file is optional; without it, fall back to `.git`, `.jj`,
-`.hg`, `.svn`. `vim.g.codelink_root_markers` overrides both.
-
-This lives outside the config on purpose — same directory the daemon reads
-`providers.json` from — so no knowledge of a particular VCS or host ends up in a
-file you would publish.
-
-## Reference implementation
-
-Two files. Paths assume a `lua/custom/util/` tree; adjust the `require` to match
-yours.
-
-### `~/.config/nvim/plugin/codelink.lua`
-
-```lua
--- codelink: keep this nvim instance discoverable by the codelink daemon.
--- All the logic lives in custom.util.codelink, required lazily inside the
--- callbacks so startup stays fast and a broken module cannot break startup.
-if vim.g.loaded_codelink then
-    return
-end
-vim.g.loaded_codelink = true
-
-local group = vim.api.nvim_create_augroup('codelink', {})
-
-vim.api.nvim_create_autocmd('VimEnter', {
-    group = group,
-    callback = function()
-        require('custom.util.codelink').register()
-    end,
-})
-
-vim.api.nvim_create_autocmd({ 'DirChanged', 'FocusGained', 'VimResume' }, {
-    group = group,
-    callback = function()
-        require('custom.util.codelink').touch()
-    end,
-})
-
-vim.api.nvim_create_autocmd('VimLeavePre', {
-    group = group,
-    callback = function()
-        require('custom.util.codelink').unregister()
-    end,
-})
-
-vim.api.nvim_create_user_command('CodelinkStatus', function()
-    local codelink = require('custom.util.codelink')
-    local path = codelink.registry_path()
-    local entry = codelink.entry()
-    local lines = { 'codelink registry: ' .. path, 'on disk: ' .. (vim.uv.fs_stat(path) and 'yes' or 'no') }
-    if entry then
-        table.insert(lines, vim.inspect(entry))
-    else
-        table.insert(lines, 'not registered')
-    end
-    vim.notify(table.concat(lines, '\n'), vim.log.levels.INFO)
-end, { desc = 'Show the codelink registry path and this instance entry' })
-```
-
-### `~/.config/nvim/lua/custom/util/codelink.lua`
-
-```lua
--- codelink: register this nvim instance in a file registry so an external
+-- codelink: register this nvim instance in a file registry so the codelink
 -- daemon can find it and remotely open a file at a line.
 --
 -- Registry entry: ~/.local/state/codelink/instances/<pid>.json
 -- Explicit socket: ~/.local/state/codelink/sock/<pid>.sock
 -- Remote entrypoint: _G.__codelink_rpc(json_string) -> json_string
+--
+-- The daemon side of this contract is documented in ../README.md.
 
 local M = {}
 
@@ -147,9 +15,9 @@ local state_dir = vim.fn.expand('~/.local/state/codelink')
 local instances_dir = state_dir .. '/instances'
 local sock_dir = state_dir .. '/sock'
 
--- Machine-local settings, deliberately outside this (versioned) config so no
--- knowledge of a particular VCS or host lives here. Same directory the daemon
--- reads its providers from. Absent file is fine: the defaults below apply.
+-- Machine-local settings, deliberately outside the plugin so no knowledge of a
+-- particular VCS or host is baked into versioned code. Same directory the
+-- daemon reads its providers from. Absent file is fine: the defaults apply.
 local local_config_path = vim.fn.expand('~/.local/share/codelink/nvim.json')
 
 local pid = vim.fn.getpid()
@@ -423,31 +291,3 @@ function _G.__codelink_rpc(payload)
 end
 
 return M
-```
-
-Requires Neovim 0.11+ (`vim.uv`, `vim.hl.range`).
-
-## Checking it works
-
-```vim
-:CodelinkStatus
-```
-
-should print the registry path, `on disk: yes`, and the entry. Then, from a
-shell:
-
-```sh
-codelink doctor            # lists live instances with their labels and sockets
-ls ~/.local/state/codelink/instances/
-```
-
-An instance started before the config was in place stays invisible until it is
-restarted.
-
-## Security note
-
-The daemon's root allowlist is not cosmetic. `mode:"new"` targets must sit
-inside a root enumerated from `providers.json`, compared after resolving
-symlinks. If your config sets `opt.exrc = true`, launching Neovim in an
-arbitrary directory that happens to contain a `.nvim.lua` would be remote code
-execution — the allowlist is what prevents a link from choosing that directory.
