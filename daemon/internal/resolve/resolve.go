@@ -130,7 +130,7 @@ func Project(repoPath string, markers []string) (string, string) {
 //   - the registry's launch_cwd/cwd come from vim.fn.getcwd(), which is already
 //     PHYSICAL, whereas Ghostty's "working directory" comes from OSC 7 and is
 //     the shell's LOGICAL $PWD. Comparing them verbatim silently misses on any
-//     symlinked directory (~/.config is a stow symlink here, so this is live).
+//     symlinked directory, which checkout roots routinely are.
 //   - the root allowlist, where a symlinked alias of an allowed root must not
 //     be treated as a different, disallowed directory.
 func Canonical(p string) string {

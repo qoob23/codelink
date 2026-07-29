@@ -17,6 +17,7 @@
 # Idempotent: existing files are never overwritten.
 set -euo pipefail
 
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SHARE="$HOME/.local/share/codelink"
 PEM="$SHARE/codelink-ext.pem"
 PUB="$SHARE/extension_key.txt"
@@ -84,11 +85,12 @@ fi
 cat <<EOF
 
 Next:
-  1. Edit $PROVIDERS   (schema: ~/.config/codelink/providers.schema.md)
+  1. Edit $PROVIDERS   (schema: $REPO/providers.schema.md)
   2. Edit $NVIMCFG     if your checkouts are marked by something other than .git
-  3. ~/.config/codelink/install.sh
-  4. Load the extension unpacked in each browser from the REAL path:
-       \$(cd ~/.config/codelink/extension && pwd -P)
+  3. Put the Neovim half in place — see $REPO/NEOVIM.md
+  4. $REPO/install.sh
+  5. Load the extension unpacked in each browser from:
+       $REPO/extension
      It must appear under id $EXT_ID — if it does not, the manifest lost its
      "key" and the daemon will reject it.
 EOF

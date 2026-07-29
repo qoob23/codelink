@@ -45,7 +45,7 @@ directory (a missing `hosts.gen.js` fails the `content_scripts` load):
 ```sh
 codelink build-manifest      # writes manifest.json + hosts.gen.js
 codelink serve               # writes token.gen.js
-ls ~/.config/codelink/extension/{manifest.json,hosts.gen.js,token.gen.js}
+ls ~/soft/codelink/extension/{manifest.json,hosts.gen.js,token.gen.js}
 ```
 
 ### Loading it
@@ -56,7 +56,7 @@ ls ~/.config/codelink/extension/{manifest.json,hosts.gen.js,token.gen.js}
    ⋮ → Extensions → Manage Extensions.
 2. Toggle **Developer mode** on, usually top right. Localised builds label it in
    their own language.
-3. **Load unpacked** → select `~/.config/codelink/extension`.
+3. **Load unpacked** → select `~/soft/codelink/extension`.
 
 Some Chromium builds restrict normal installs to a vendor catalogue and/or the
 Chrome Web Store; developer-mode unpacked loading is the supported escape hatch
@@ -86,7 +86,7 @@ Both are inlined into `content.js` as `String.raw` literals between
 nothing** until you re-run the inliner:
 
 ```sh
-cd ~/.config/codelink/extension
+cd ~/soft/codelink/extension
 node - "$PWD" <<'EOF'
 const fs = require('fs'), path = require('path');
 const dir = process.argv[2], js = path.join(dir, 'content.js');
@@ -127,7 +127,7 @@ backtick or `${`.
 ### Icons
 
 ```sh
-cd ~/.config/codelink/extension
+cd ~/soft/codelink/extension
 # from the ORIGINAL two-colour mark, not the currentColor one
 for n in 16 48 128; do
   rsvg-convert -h $((n * 86 / 100)) -f png /path/to/neovim-mark-flat.svg -o /tmp/raw-$n.png

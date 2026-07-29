@@ -22,6 +22,10 @@
         <string>47391</string>
         <key>CODELINK_NVIM</key>
         <string>/opt/homebrew/bin/nvim</string>
+        <!-- Where `serve` writes token.gen.js. Must point at the extension/ of
+             the checkout you loaded unpacked; update it if you move the repo. -->
+        <key>CODELINK_EXTENSION_DIR</key>
+        <string>/Users/svetozar/soft/codelink/extension</string>
     </dict>
 
     <key>RunAtLoad</key>

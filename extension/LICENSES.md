@@ -27,4 +27,4 @@ extension talks to.
 
 The extension source in this directory (`background.js`, `content.js`,
 `content.css`, `manifest.template.json`) carries whatever license the enclosing
-dotfiles repository carries; it is not derived from any third-party code.
+repository carries; it is not derived from any third-party code.

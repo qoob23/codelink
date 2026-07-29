@@ -27,6 +27,12 @@ this repo.
 | `bootstrap.sh` | First-run setup: keypair + starter configs. Never overwrites. |
 | `install.sh` | Build → codesign → generate manifest → (re)load the agent. Idempotent. |
 | `skills/` | Agent skill for configuring and debugging codelink — see below. |
+| `NEOVIM.md` | The Neovim half: the contract the daemon speaks, and a config to copy. |
+
+The checkout can live anywhere — `bootstrap.sh` and `install.sh` resolve every
+path from their own location. Two things do not follow automatically if you move
+it: the `CODELINK_EXTENSION_DIR` literal in `launchd/*.plist` (launchd does not
+expand `$HOME`), and the unpacked-extension path registered in each browser.
 
 Generated, gitignored, and **not** yours to edit: `extension/manifest.json`,
 `extension/hosts.gen.js` (both from `build-manifest`), `extension/token.gen.js`
@@ -48,6 +54,10 @@ untracked files under `~/.local/share/codelink/`:
 | `providers.json` | daemon | Hosts, URL patterns, checkout roots. See `providers.schema.md`. |
 | `nvim.json` | Neovim module | `root_markers` — the directory names that mark a checkout root, e.g. `[".git", ".jj"]` plus whatever your VCS uses. |
 
+The Neovim module itself is not tracked here either — it belongs in your own
+`~/.config/nvim`. `NEOVIM.md` specifies the contract and carries a reference
+implementation to copy.
+
 `nvim.json` is optional; without it the module falls back to plain VCS markers
 (`.git`, `.jj`, `.hg`, `.svn`). `vim.g.codelink_root_markers` overrides both.
 
@@ -60,17 +70,17 @@ Chromium then derives the extension ID from its install path, and every request
 is rejected with an opaque 403 that looks like a CORS bug.
 
 ```sh
-~/.config/codelink/bootstrap.sh    # keypair + starter configs; never overwrites
+~/soft/codelink/bootstrap.sh    # keypair + starter configs; never overwrites
 $EDITOR ~/.local/share/codelink/providers.json
-~/.config/codelink/install.sh      # build, sign, generate manifest, load agent
+~/soft/codelink/install.sh      # build, sign, generate manifest, load agent
 ```
 
 `bootstrap.sh` prints the extension ID it derived. Then load the extension
-unpacked in each browser, from the **real** path — not through the `~/.config`
-symlink, which has caused reload flakiness:
+unpacked in each browser, from the **real** path — a symlinked load path has
+caused reload flakiness:
 
 ```sh
-cd ~/.config/codelink/extension && pwd -P
+cd ~/soft/codelink/extension && pwd -P
 ```
 
 Check the ID on the extension card matches the one `bootstrap.sh` printed. If it
@@ -81,14 +91,14 @@ To keep the same ID as an existing machine, copy `codelink-ext.pem` across
 regenerates `extension_key.txt` from it. Generating a fresh keypair is fine too,
 as long as you update `extensionId` in `providers.json` to the new value.
 
-The Neovim half needs nothing beyond the config being present:
-`~/.config/nvim/plugin/codelink.lua` registers every instance you start.
-Instances started before the first install stay invisible until restarted.
+The Neovim half is two files in your own config — see `NEOVIM.md`. Once
+`plugin/codelink.lua` is in place it registers every instance you start;
+instances started before that stay invisible until restarted.
 
 ## Upgrading an existing install
 
 ```sh
-~/.config/codelink/install.sh
+~/soft/codelink/install.sh
 ```
 
 Idempotent — rebuilds, re-signs, regenerates the manifest and kickstarts the
@@ -104,7 +114,7 @@ with a clone can install it on demand:
 
 ```sh
 mkdir -p ~/.claude/skills
-ln -sfn "$(cd ~/.config/codelink/skills/codelink-config && pwd -P)" \
+ln -sfn "$(cd ~/soft/codelink/skills/codelink-config && pwd -P)" \
         ~/.claude/skills/codelink-config
 ```
 

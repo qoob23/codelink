@@ -205,8 +205,8 @@ return (ids as text) & linefeed & "--" & linefeed & (dirs as text)`
 // $PWD, and it freezes at the directory the shell was in when nvim launched —
 // which is exactly the registry's launch_cwd. But launch_cwd is written from
 // vim.fn.getcwd(), which is PHYSICAL (symlink-resolved). Comparing the two
-// verbatim silently misses on any symlinked directory, and ~/.config is a stow
-// symlink on this machine, so both sides are canonicalised first.
+// verbatim silently misses on any symlinked directory, which checkout roots
+// routinely are, so both sides are canonicalised first.
 //
 // Focus is only issued when exactly one terminal matches; anything ambiguous
 // falls through to the caller's tier-3 handling.

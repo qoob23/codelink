@@ -161,12 +161,12 @@ Restart nvim to re-register; existing instances keep their old root.
 ## Task: bootstrap a new machine
 
 ```sh
-~/.config/codelink/bootstrap.sh    # keypair + starter configs; never overwrites
+~/soft/codelink/bootstrap.sh    # keypair + starter configs; never overwrites
 $EDITOR ~/.local/share/codelink/providers.json
-~/.config/codelink/install.sh      # build, sign, generate manifest, load agent
+~/soft/codelink/install.sh      # build, sign, generate manifest, load agent
 ```
 
-Then load the extension unpacked from `$(cd ~/.config/codelink/extension && pwd -P)`
+Then load the extension unpacked from `$(cd ~/soft/codelink/extension && pwd -P)`
 and **verify the id on the card matches what `bootstrap.sh` printed**.
 
 To keep one id across machines, copy `codelink-ext.pem` (a private key) and

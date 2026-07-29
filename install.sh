@@ -4,12 +4,18 @@ set -euo pipefail
 
 LABEL="com.qoob23.codelink"
 BIN="$HOME/.local/bin/codelink"
-PLIST_SRC="$HOME/.config/codelink/launchd/$LABEL.plist"
-PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
 IDENTITY="codelink-dev"
 
-# ~/.config is a folded stow symlink into ~/.dotfiles; Go tooling wants the real path.
-SRC="$(cd "$HOME/.config/codelink/daemon" && pwd -P)"
+# Everything is resolved from the checkout this script lives in, so the repo can
+# sit anywhere. pwd -P because Go tooling wants a real path, not a symlink.
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SRC="$REPO/daemon"
+PLIST_SRC="$REPO/launchd/$LABEL.plist"
+PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+# build-manifest writes manifest.json and hosts.gen.js into this checkout's
+# extension/, wherever the checkout happens to live.
+export CODELINK_EXTENSION_DIR="$REPO/extension"
 
 # --- build ------------------------------------------------------------------
 mkdir -p "$HOME/.local/bin" "$HOME/.local/state/codelink"/{instances,sock} "$HOME/.local/share/codelink"

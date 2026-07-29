@@ -101,8 +101,16 @@ func instanceDir() string { return filepath.Join(stateDir(), "instances") }
 func sockDir() string     { return filepath.Join(stateDir(), "sock") }
 func tokenPath() string   { return filepath.Join(stateDir(), "token") }
 
+// extensionDir is where manifest.json, hosts.gen.js and token.gen.js are
+// written. It is the extension/ directory of the checkout, which can live
+// anywhere — install.sh exports the variable from its own location, and the
+// LaunchAgent plist carries the same literal path for `serve`. The fallback is
+// only for running the binary by hand from a default checkout.
 func extensionDir() string {
-	return filepath.Join(home(), ".config", "codelink", "extension")
+	if v := strings.TrimSpace(os.Getenv("CODELINK_EXTENSION_DIR")); v != "" {
+		return roots.ExpandTilde(v)
+	}
+	return filepath.Join(home(), "soft", "codelink", "extension")
 }
 
 func port() int {

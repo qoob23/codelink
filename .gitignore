@@ -1,0 +1,12 @@
+# Written by `codelink build-manifest` from manifest.template.json plus the
+# extensionId and hosts in ~/.local/share/codelink/providers.json.
+/extension/manifest.json
+/extension/hosts.gen.js
+
+# Written by `codelink serve` at startup: the shared daemon token.
+/extension/token.gen.js
+
+# Dependencies of the extension's node:test suite.
+/extension/test/node_modules/
+
+.DS_Store
