@@ -17,30 +17,62 @@ Nothing here knows about a specific code host. That lives in
 `~/.local/share/codelink/providers.json` (see `providers.schema.md`), outside
 this repo.
 
+## Install
+
+The repo is a Neovim plugin as well as the daemon and the extension it needs, so
+your plugin manager can own the whole thing. With lazy.nvim:
+
+```lua
+{ 'qoob23/codelink', build = './install.sh' }
+```
+
+`build` compiles the daemon, signs it, generates the extension manifest and
+loads the LaunchAgent. On a first install it also generates the extension
+keypair and starter configs, then prints two things you have to act on:
+
+1. **Edit `~/.local/share/codelink/providers.json`** — the starter file names
+   `example.com`. Nothing resolves until it names your hosts and checkout roots.
+   See `providers.schema.md`.
+2. **Load the extension unpacked**, from the path `install.sh` prints (your
+   plugin manager's clone, e.g. `~/.local/share/nvim/lazy/codelink/extension`).
+   Check the id on the card matches the one printed — if it doesn't, the
+   manifest lost its `key` and every request will 403.
+
+Requires Go, Neovim 0.11+, and macOS for the Ghostty/launchd half.
+
+Re-run the build step (`:Lazy build codelink`) after changing `providers.json`,
+and reload the extension card when `content.js`, `background.js` or the manifest
+changed — Chromium does not pick up file changes on its own.
+
 ## Layout
 
 | Path | What |
 | --- | --- |
+| `plugin/`, `lua/` | The Neovim plugin. At the root so the repo *is* the plugin — see `CONTRACT.md`. |
 | `daemon/` | Go module, stdlib only. Subcommands `serve`, `build-manifest`, `doctor`. |
 | `extension/` | Chromium MV3 extension, loaded unpacked (works in any Chromium build). |
-| `nvim/` | Neovim plugin. Registers the instance and answers open requests — see `nvim/README.md`. |
 | `launchd/` | LaunchAgent plist **template**, rendered into `~/Library/LaunchAgents` by the installer. |
 | `bootstrap.sh` | First-run setup: keypair + starter configs. Never overwrites. |
-| `install.sh` | Build → codesign → generate manifest → render plist → (re)load the agent. Idempotent. |
+| `install.sh` | Bootstrap → build → codesign → generate manifest → render plist → (re)load the agent. Idempotent. |
 | `skills/` | Agent skill for configuring and debugging codelink — see below. |
 
 Three parts, one contract each: the extension decides which links get a button,
 the daemon turns a URL into a path and picks an instance, the plugin makes an
 instance findable and opens the buffer. They live in one repo because the
-contracts between them are what would drift if they did not.
+contracts between them are what would drift if they did not — and because it
+lets one `build` line install all three.
 
-The checkout can live anywhere. Nothing tracked here names a checkout path:
-`bootstrap.sh` and `install.sh` resolve from their own location, the daemon
-takes `extension/` from `$CODELINK_EXTENSION_DIR`, and the plist — which must
-carry absolute paths, since launchd expands neither `~` nor `$HOME` — is a
-template rendered at install time. Move the checkout and re-run `install.sh`;
-the one thing that does not follow is the unpacked-extension path registered in
-each browser, which has to be re-pointed by hand.
+The checkout can live anywhere, which is what makes a plugin manager's clone a
+valid install: `bootstrap.sh` and `install.sh` resolve from their own location,
+the daemon takes `extension/` from `$CODELINK_EXTENSION_DIR`, and the plist —
+which must carry absolute paths, since launchd expands neither `~` nor `$HOME` —
+is a template rendered at install time. Move the checkout and re-run
+`install.sh`; the one thing that does not follow is the unpacked-extension path
+registered in each browser, which has to be re-pointed by hand.
+
+Hacking on it: point lazy.nvim at your own clone with its `dev` option
+(`{ 'qoob23/codelink', dev = true }` plus `dev = { path = '~/where/you/clone' }`
+in your lazy setup) so there is one copy rather than two competing installs.
 
 Generated, gitignored, and **not** yours to edit: `extension/manifest.json`,
 `extension/hosts.gen.js` (both from `build-manifest`), `extension/token.gen.js`
@@ -65,16 +97,10 @@ untracked files under `~/.local/share/codelink/`:
 `nvim.json` is optional; without it the plugin falls back to plain VCS markers
 (`.git`, `.jj`, `.hg`, `.svn`). `vim.g.codelink_root_markers` overrides both.
 
-## Install on a new machine
+## Installing without a plugin manager
 
-The repo alone is not enough: the keypair, `providers.json` and `nvim.json` are
-untracked by design, so a fresh clone has none of them. Skipping this step
-produces a confusing failure — with no `extensionId` the manifest gets no `key`,
-Chromium then derives the extension ID from its install path, and every request
-is rejected with an opaque 403 that looks like a CORS bug.
-
-Clone it wherever you keep such things; the scripts resolve everything from
-their own location, so no path below is a choice you have to reproduce.
+The two scripts are the whole install; they resolve everything from their own
+location, so no path here is a choice you have to reproduce.
 
 ```sh
 cd <checkout>
@@ -83,42 +109,30 @@ $EDITOR ~/.local/share/codelink/providers.json
 ./install.sh                    # build, sign, generate manifest, load agent
 ```
 
-`bootstrap.sh` prints the extension ID it derived. Then load the extension
-unpacked in each browser, from the **real** path — a symlinked load path has
-caused reload flakiness:
-
-```sh
-cd <checkout>/extension && pwd -P
-```
-
-Check the ID on the extension card matches the one `bootstrap.sh` printed. If it
-doesn't, the manifest lost its `key` and nothing will work.
-
-To keep the same ID as an existing machine, copy `codelink-ext.pem` across
-(it's a private key — treat it as a secret) and re-run `bootstrap.sh`, which
-regenerates `extension_key.txt` from it. Generating a fresh keypair is fine too,
-as long as you update `extensionId` in `providers.json` to the new value.
-
-Last, add `nvim/` to your Neovim runtimepath — see `nvim/README.md`. With
-lazy.nvim that is one line:
+Then load the extension unpacked from `<checkout>/extension` — use the **real**
+path, a symlinked load path has caused reload flakiness — and add the checkout
+to your runtimepath:
 
 ```lua
-{ dir = vim.fn.expand('<checkout>/nvim'), name = 'codelink', lazy = false }
+vim.opt.runtimepath:append(vim.fn.expand('<checkout>'))
 ```
 
-It registers every instance you start; instances started before that stay
-invisible until restarted.
+The plugin registers every instance you start; instances started before it was
+in place stay invisible until restarted.
+
+### Keeping one extension id across machines
+
+Copy `codelink-ext.pem` across (it's a private key — treat it as a secret) and
+re-run `bootstrap.sh`, which regenerates `extension_key.txt` from it. Generating
+a fresh keypair is fine too, as long as you update `extensionId` in
+`providers.json` to the new value.
 
 ## Upgrading an existing install
 
-```sh
-<checkout>/install.sh
-```
-
-Idempotent — rebuilds, re-signs, re-renders the LaunchAgent plist, regenerates
-the manifest and kickstarts the agent. Run it again after moving the checkout:
-the plist's absolute paths are the only thing that does not follow by itself. Reload the extension card afterwards if `content.js`, `background.js` or
-the manifest changed; Chromium does not pick up file changes on its own.
+`:Lazy build codelink`, or `<checkout>/install.sh` directly. Idempotent —
+rebuilds, re-signs, re-renders the LaunchAgent plist, regenerates the manifest
+and kickstarts the agent. Run it again after moving the checkout: the plist's
+absolute paths are the only thing that does not follow by itself.
 
 ## The agent skill
 

@@ -26,6 +26,17 @@ fi
 # extension/, wherever the checkout happens to live.
 export CODELINK_EXTENSION_DIR="$REPO/extension"
 
+# --- first run --------------------------------------------------------------
+# Without a keypair the manifest gets no "key", Chromium derives the extension
+# id from the install path instead, and every request is rejected with an opaque
+# 403. So bootstrap before building rather than leaving it to the reader — this
+# script is what a plugin manager's `build` step runs, and it is the only hook
+# a one-line install gets. bootstrap.sh never overwrites, so re-running is free.
+if [[ ! -f "$HOME/.local/share/codelink/codelink-ext.pem" ]]; then
+    echo ">>> first run: bootstrapping keypair and starter configs"
+    "$REPO/bootstrap.sh"
+fi
+
 # --- build ------------------------------------------------------------------
 mkdir -p "$HOME/.local/bin" "$STATE"/{instances,sock} "$HOME/.local/share/codelink"
 echo ">>> building $SRC -> $BIN"
@@ -72,4 +83,12 @@ launchctl kickstart -k "gui/$(id -u)/$LABEL"
 
 sleep 1
 echo ">>> $(launchctl print "gui/$(id -u)/$LABEL" | grep -E '^\s+(state|pid) =' || true)"
-echo ">>> done. Check: $BIN doctor"
+
+cat <<EOF
+>>> done. Check: $BIN doctor
+
+    Load the extension unpacked from:
+      $CODELINK_EXTENSION_DIR
+    Chromium does not pick up file changes on its own — reload the card after
+    an update that touched the extension.
+EOF

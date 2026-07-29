@@ -86,10 +86,10 @@ cat <<EOF
 
 Next:
   1. Edit $PROVIDERS   (schema: $REPO/providers.schema.md)
+     Nothing resolves until this names your hosts and checkout roots.
   2. Edit $NVIMCFG     if your checkouts are marked by something other than .git
-  3. Add $REPO/nvim to your Neovim runtimepath — see $REPO/nvim/README.md
-  4. $REPO/install.sh
-  5. Load the extension unpacked in each browser from:
+  3. $REPO/install.sh  (already running it? then this is done)
+  4. Load the extension unpacked in each browser from:
        $REPO/extension
      It must appear under id $EXT_ID — if it does not, the manifest lost its
      "key" and the daemon will reject it.

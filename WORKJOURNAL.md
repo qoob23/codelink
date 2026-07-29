@@ -101,12 +101,20 @@ Decisions and why. Not documentation — see `README.md` and
   became a template rendered at install time, since launchd expands neither `~`
   nor `$HOME` and a literal path there would re-pin the whole thing to one
   machine.
-- **The Neovim half moved in, as `nvim/`.** It was two files in a personal
-  config, which is what let the daemon and the editor drift apart in the first
-  place — the registry schema is a contract with three writers and one reader.
-  Keeping the plugin beside `daemon/` means a change to the entry format is one
-  commit that touches both sides. It stays a plain runtimepath directory with no
-  `setup()`, so nothing about a plugin manager is assumed.
+- **The Neovim half moved in, and to the repo ROOT.** It was two files in a
+  personal config, which is what let the daemon and the editor drift apart in
+  the first place — the registry schema is a contract with three writers and one
+  reader, and only one side of it was versioned. First attempt put it in
+  `nvim/`, which reads tidier but is not installable: lazy.nvim clones a repo
+  root, so a subdirectory plugin forces every user to write
+  `dir = '/some/path/nvim'` — an install instruction that is really a
+  workaround, and one that hardcodes a path the rest of the tree had just been
+  cleaned of. At the root, `{ 'qoob23/codelink' }` is the whole spec.
+- **`build = './install.sh'` makes the plugin manager the installer.** The clone
+  already contains the daemon and the extension, and nothing assumes a checkout
+  location, so the clone is a valid install root. `install.sh` runs
+  `bootstrap.sh` itself when the keypair is missing: a one-line install gets
+  exactly one hook, and without the keypair the failure is an opaque 403.
 - **`root_markers` deliberately stayed in `nvim.json`.** It is the one setting
   that would name your VCS, and the whole point of the untracked-config split is
   that publishing this tree reveals nothing about where you work.

@@ -1,44 +1,24 @@
-# codelink.nvim
+# The editor half
 
-The editor half of codelink: a self-contained Neovim plugin that makes this
-instance discoverable by the daemon and answers its open requests.
-
-Without it the browser button still appears, the daemon finds no instance, and
-every click falls through to spawning a new window.
+The Neovim plugin makes this instance discoverable by the daemon and answers its
+open requests. Without it the browser button still appears, the daemon finds no
+instance, and every click falls through to spawning a new window.
 
 ```
-nvim/
-├── plugin/codelink.lua      autocmds + :CodelinkStatus
-└── lua/codelink/init.lua    registry, socket, RPC entrypoint
+plugin/codelink.lua      autocmds + :CodelinkStatus
+lua/codelink/init.lua    registry, socket, RPC entrypoint
 ```
+
+They sit at the repo root rather than under a `nvim/` subdirectory so the repo
+*is* the plugin — `{ 'qoob23/codelink' }` is a complete lazy.nvim spec, no `dir`
+and no path to fill in. See the README for the install line.
 
 No `setup()` call, no options table — it registers on `VimEnter` and needs
-nothing from you.
+nothing from you. Requires Neovim 0.11+ (`vim.uv`, `vim.hl.range`).
 
-## Install
-
-The plugin lives in a subdirectory of the codelink repo rather than in one of
-its own, because it is one side of a contract whose other side is `daemon/`;
-splitting them across repos would let them drift. You already need the checkout
-on disk to build the daemon and load the extension unpacked, so point your
-plugin manager at it locally.
-
-**lazy.nvim**
-
-```lua
-{ dir = vim.fn.expand('<checkout>/nvim'), name = 'codelink', lazy = false }
-```
-
-`lazy = false` is required: the plugin must be loaded by `VimEnter`, and a
-lazy-loaded spec with no trigger never gets there.
-
-**No plugin manager**
-
-```lua
-vim.opt.runtimepath:append(vim.fn.expand('<checkout>/nvim'))
-```
-
-Requires Neovim 0.11+ (`vim.uv`, `vim.hl.range`).
+The plugin is versioned with the daemon on purpose: the registry entry below is
+a contract with one reader and three writers, and keeping both sides in one
+commit is what stops them drifting.
 
 ## Configuration
 
