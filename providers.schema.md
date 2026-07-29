@@ -7,7 +7,7 @@ checkouts live locally. It is deliberately **outside** this versioned config, at
 ~/.local/share/codelink/providers.json      # override with $CODELINK_PROVIDERS
 ```
 
-Everything in `~/soft/codelink/` is host-agnostic. Adding a new site means
+Everything tracked in this repo is host-agnostic. Adding a new site means
 editing this file and running `codelink build-manifest` — no code changes.
 
 ## Top level

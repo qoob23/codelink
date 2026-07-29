@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -36,6 +37,10 @@ const (
 	defaultPort    = 47391
 	defaultNvimBin = "/opt/homebrew/bin/nvim"
 )
+
+// manifestTemplate doubles as the marker that identifies an extension
+// directory, so it is named once.
+const manifestTemplate = "manifest.template.json"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -101,17 +106,35 @@ func instanceDir() string { return filepath.Join(stateDir(), "instances") }
 func sockDir() string     { return filepath.Join(stateDir(), "sock") }
 func tokenPath() string   { return filepath.Join(stateDir(), "token") }
 
-// extensionDir is where manifest.json, hosts.gen.js and token.gen.js are
-// written. It is the extension/ directory of the checkout, which can live
-// anywhere — install.sh exports the variable from its own location, and the
-// LaunchAgent plist carries the same literal path for `serve`. The fallback is
-// only for running the binary by hand from a default checkout.
+// extensionDir is the checkout's extension/ directory, where manifest.json,
+// hosts.gen.js and token.gen.js are written.
+//
+// The checkout can live anywhere, so this is never guessed from $HOME:
+// install.sh exports CODELINK_EXTENSION_DIR from its own location and renders
+// the same path into the LaunchAgent plist. Running a subcommand by hand from
+// inside the checkout works too — the template file identifies the directory.
+// Everything else returns "", and callers report that as a real error rather
+// than writing into some unrelated place.
 func extensionDir() string {
 	if v := strings.TrimSpace(os.Getenv("CODELINK_EXTENSION_DIR")); v != "" {
 		return roots.ExpandTilde(v)
 	}
-	return filepath.Join(home(), "soft", "codelink", "extension")
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for _, cand := range []string{filepath.Join(cwd, "extension"), cwd} {
+		if _, err := os.Stat(filepath.Join(cand, manifestTemplate)); err == nil {
+			return cand
+		}
+	}
+	return ""
 }
+
+// errNoExtensionDir explains the one thing that cannot be recovered from.
+var errNoExtensionDir = errors.New(
+	"cannot locate the extension directory: set $CODELINK_EXTENSION_DIR to <checkout>/extension, " +
+		"or run this from inside the checkout (install.sh does both for you)")
 
 func port() int {
 	if v := os.Getenv("CODELINK_PORT"); v != "" {
@@ -129,6 +152,16 @@ func nvimBin() string {
 	return defaultNvimBin
 }
 
+// tokenJSPath is empty when the extension directory is unknown; the server
+// treats that as "do not write it".
+func tokenJSPath() string {
+	dir := extensionDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "token.gen.js")
+}
+
 func serverOptions() httpapi.Options {
 	return httpapi.Options{
 		ConfigPath:  configPath(),
@@ -136,7 +169,7 @@ func serverOptions() httpapi.Options {
 		InstanceDir: instanceDir(),
 		SockDir:     sockDir(),
 		TokenPath:   tokenPath(),
-		TokenJSPath: filepath.Join(extensionDir(), "token.gen.js"),
+		TokenJSPath: tokenJSPath(),
 		NvimBin:     nvimBin(),
 		Port:        port(),
 		Version:     version,
@@ -146,6 +179,12 @@ func serverOptions() httpapi.Options {
 // ------------------------------------------------------------------ serve
 
 func cmdServe() error {
+	// Not fatal — the daemon still answers — but the extension authenticates
+	// with the token from token.gen.js, so without it every request 403s and
+	// the cause is invisible from the browser side.
+	if extensionDir() == "" {
+		fmt.Fprintf(os.Stderr, "warning: %v\n         token.gen.js will not be refreshed\n", errNoExtensionDir)
+	}
 	for _, d := range []string{instanceDir(), sockDir()} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
@@ -179,6 +218,9 @@ func cmdBuildManifest() error {
 	}
 
 	dir := extensionDir()
+	if dir == "" {
+		return errNoExtensionDir
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -196,7 +238,7 @@ func cmdBuildManifest() error {
 	}
 	fmt.Printf("wrote %s\n  hosts: %s\n", hostsPath, hostsJSON)
 
-	tmplPath := filepath.Join(dir, "manifest.template.json")
+	tmplPath := filepath.Join(dir, manifestTemplate)
 	raw, err := os.ReadFile(tmplPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -331,7 +373,11 @@ func cmdDoctor() error {
 	fmt.Printf("  port           : %d (127.0.0.1 only)\n", port())
 	fmt.Printf("  nvim           : %s%s\n", nvimBin(), existsNote(nvimBin()))
 	fmt.Printf("  token          : %s%s\n", tokenPath(), existsNote(tokenPath()))
-	fmt.Printf("  token.gen.js   : %s%s\n", filepath.Join(extensionDir(), "token.gen.js"), existsNote(filepath.Join(extensionDir(), "token.gen.js")))
+	if p := tokenJSPath(); p != "" {
+		fmt.Printf("  token.gen.js   : %s%s\n", p, existsNote(p))
+	} else {
+		fmt.Printf("  token.gen.js   : UNRESOLVED — %v\n", errNoExtensionDir)
+	}
 	fmt.Printf("  state dir      : %s\n", stateDir())
 	fmt.Printf("  instances dir  : %s%s\n", instanceDir(), existsNote(instanceDir()))
 	fmt.Println()

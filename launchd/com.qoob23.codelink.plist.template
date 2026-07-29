@@ -1,14 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Template. launchd expands neither ~ nor $HOME, so every path in a plist has
+    to be literal — which would pin the checkout to one machine. install.sh
+    renders the __PLACEHOLDERS__ from its own location and installs the result
+    as ~/Library/LaunchAgents/com.qoob23.codelink.plist. Edit this file, never
+    the rendered one, then re-run install.sh.
+-->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.qoob23.codelink</string>
 
-    <!-- launchd does not expand ~ or $HOME in plists: every path here is literal. -->
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/svetozar/.local/bin/codelink</string>
+        <string>__BIN__</string>
         <string>serve</string>
     </array>
 
@@ -17,15 +23,14 @@
         <!-- A launchd agent inherits PATH=/usr/bin:/bin:/usr/sbin:/sbin, which has
              neither nvim nor ghostty. -->
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>__PATH__</string>
         <key>CODELINK_PORT</key>
         <string>47391</string>
         <key>CODELINK_NVIM</key>
-        <string>/opt/homebrew/bin/nvim</string>
-        <!-- Where `serve` writes token.gen.js. Must point at the extension/ of
-             the checkout you loaded unpacked; update it if you move the repo. -->
+        <string>__NVIM__</string>
+        <!-- Where `serve` writes token.gen.js: the checkout's extension/. -->
         <key>CODELINK_EXTENSION_DIR</key>
-        <string>/Users/svetozar/soft/codelink/extension</string>
+        <string>__EXTENSION_DIR__</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -50,8 +55,8 @@
     <string>Interactive</string>
 
     <key>StandardOutPath</key>
-    <string>/Users/svetozar/.local/state/codelink/daemon.out.log</string>
+    <string>__STATE_DIR__/daemon.out.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/svetozar/.local/state/codelink/daemon.err.log</string>
+    <string>__STATE_DIR__/daemon.err.log</string>
 </dict>
 </plist>

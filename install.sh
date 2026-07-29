@@ -10,15 +10,24 @@ IDENTITY="codelink-dev"
 # sit anywhere. pwd -P because Go tooling wants a real path, not a symlink.
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SRC="$REPO/daemon"
-PLIST_SRC="$REPO/launchd/$LABEL.plist"
+STATE="$HOME/.local/state/codelink"
+PLIST_TMPL="$REPO/launchd/$LABEL.plist.template"
 PLIST_DST="$HOME/Library/LaunchAgents/$LABEL.plist"
+
+# The plist needs an absolute nvim, and a PATH that can reach both nvim and
+# ghostty — a launchd agent inherits neither.
+NVIM="${CODELINK_NVIM:-$(command -v nvim || true)}"
+if [[ -z "$NVIM" ]]; then
+    echo ">>> ERROR: no nvim on PATH; set CODELINK_NVIM to its absolute path." >&2
+    exit 1
+fi
 
 # build-manifest writes manifest.json and hosts.gen.js into this checkout's
 # extension/, wherever the checkout happens to live.
 export CODELINK_EXTENSION_DIR="$REPO/extension"
 
 # --- build ------------------------------------------------------------------
-mkdir -p "$HOME/.local/bin" "$HOME/.local/state/codelink"/{instances,sock} "$HOME/.local/share/codelink"
+mkdir -p "$HOME/.local/bin" "$STATE"/{instances,sock} "$HOME/.local/share/codelink"
 echo ">>> building $SRC -> $BIN"
 (cd "$SRC" && go build -trimpath -o "$BIN" .)
 
@@ -42,8 +51,19 @@ fi
 "$BIN" build-manifest || echo ">>> build-manifest skipped (template not present yet)"
 
 # --- launchd ----------------------------------------------------------------
+# Rendered rather than symlinked: launchd expands neither ~ nor $HOME, so the
+# plist has to carry absolute paths, which is exactly what would otherwise pin
+# the checkout to one machine.
 mkdir -p "$HOME/Library/LaunchAgents"
-ln -sfn "$PLIST_SRC" "$PLIST_DST"
+# Earlier versions symlinked the plist here. Redirecting onto a symlink writes
+# THROUGH it, i.e. straight back into the checkout, so unlink first.
+rm -f "$PLIST_DST"
+sed -e "s|__BIN__|$BIN|g" \
+    -e "s|__NVIM__|$NVIM|g" \
+    -e "s|__PATH__|$(dirname "$NVIM"):/usr/bin:/bin:/usr/sbin:/sbin|g" \
+    -e "s|__EXTENSION_DIR__|$CODELINK_EXTENSION_DIR|g" \
+    -e "s|__STATE_DIR__|$STATE|g" \
+    "$PLIST_TMPL" >"$PLIST_DST"
 
 # bootout is expected to fail on a first install; the daemon isn't loaded yet.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true

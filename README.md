@@ -23,16 +23,19 @@ this repo.
 | --- | --- |
 | `daemon/` | Go module, stdlib only. Subcommands `serve`, `build-manifest`, `doctor`. |
 | `extension/` | Chromium MV3 extension, loaded unpacked (works in any Chromium build). |
-| `launchd/` | The LaunchAgent plist, symlinked into `~/Library/LaunchAgents` by the installer. |
+| `launchd/` | LaunchAgent plist **template**, rendered into `~/Library/LaunchAgents` by the installer. |
 | `bootstrap.sh` | First-run setup: keypair + starter configs. Never overwrites. |
-| `install.sh` | Build → codesign → generate manifest → (re)load the agent. Idempotent. |
+| `install.sh` | Build → codesign → generate manifest → render plist → (re)load the agent. Idempotent. |
 | `skills/` | Agent skill for configuring and debugging codelink — see below. |
 | `NEOVIM.md` | The Neovim half: the contract the daemon speaks, and a config to copy. |
 
-The checkout can live anywhere — `bootstrap.sh` and `install.sh` resolve every
-path from their own location. Two things do not follow automatically if you move
-it: the `CODELINK_EXTENSION_DIR` literal in `launchd/*.plist` (launchd does not
-expand `$HOME`), and the unpacked-extension path registered in each browser.
+The checkout can live anywhere. Nothing tracked here names a checkout path:
+`bootstrap.sh` and `install.sh` resolve from their own location, the daemon
+takes `extension/` from `$CODELINK_EXTENSION_DIR`, and the plist — which must
+carry absolute paths, since launchd expands neither `~` nor `$HOME` — is a
+template rendered at install time. Move the checkout and re-run `install.sh`;
+the one thing that does not follow is the unpacked-extension path registered in
+each browser, which has to be re-pointed by hand.
 
 Generated, gitignored, and **not** yours to edit: `extension/manifest.json`,
 `extension/hosts.gen.js` (both from `build-manifest`), `extension/token.gen.js`
@@ -69,10 +72,14 @@ produces a confusing failure — with no `extensionId` the manifest gets no `key
 Chromium then derives the extension ID from its install path, and every request
 is rejected with an opaque 403 that looks like a CORS bug.
 
+Clone it wherever you keep such things; the scripts resolve everything from
+their own location, so no path below is a choice you have to reproduce.
+
 ```sh
-~/soft/codelink/bootstrap.sh    # keypair + starter configs; never overwrites
+cd <checkout>
+./bootstrap.sh                  # keypair + starter configs; never overwrites
 $EDITOR ~/.local/share/codelink/providers.json
-~/soft/codelink/install.sh      # build, sign, generate manifest, load agent
+./install.sh                    # build, sign, generate manifest, load agent
 ```
 
 `bootstrap.sh` prints the extension ID it derived. Then load the extension
@@ -80,7 +87,7 @@ unpacked in each browser, from the **real** path — a symlinked load path has
 caused reload flakiness:
 
 ```sh
-cd ~/soft/codelink/extension && pwd -P
+cd <checkout>/extension && pwd -P
 ```
 
 Check the ID on the extension card matches the one `bootstrap.sh` printed. If it
@@ -98,11 +105,12 @@ instances started before that stay invisible until restarted.
 ## Upgrading an existing install
 
 ```sh
-~/soft/codelink/install.sh
+<checkout>/install.sh
 ```
 
-Idempotent — rebuilds, re-signs, regenerates the manifest and kickstarts the
-agent. Reload the extension card afterwards if `content.js`, `background.js` or
+Idempotent — rebuilds, re-signs, re-renders the LaunchAgent plist, regenerates
+the manifest and kickstarts the agent. Run it again after moving the checkout:
+the plist's absolute paths are the only thing that does not follow by itself. Reload the extension card afterwards if `content.js`, `background.js` or
 the manifest changed; Chromium does not pick up file changes on its own.
 
 ## The agent skill
@@ -114,7 +122,7 @@ with a clone can install it on demand:
 
 ```sh
 mkdir -p ~/.claude/skills
-ln -sfn "$(cd ~/soft/codelink/skills/codelink-config && pwd -P)" \
+ln -sfn "$(cd <checkout>/skills/codelink-config && pwd -P)" \
         ~/.claude/skills/codelink-config
 ```
 
