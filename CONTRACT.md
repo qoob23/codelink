@@ -80,6 +80,11 @@ daemon reads these on every hover and a torn write breaks the parse.
 The daemon tries `servername` first, then `auto_servername`, taking the first
 socket that exists on disk; an entry with neither is pruned.
 
+The entry must be a **regular file of at most 64 KiB** — a symlink, a FIFO or an
+oversized file is skipped, silently and without being deleted. A port that
+symlinks its entry into place would simply never be seen, so write the real file
+(the temp-file-plus-rename above already does).
+
 `cwd` and `launch_cwd` must be physical paths — `vim.fn.getcwd()` already is.
 The daemon canonicalises both sides before comparing, because a shell's OSC 7
 `$PWD` is logical and checkout roots are routinely symlinked.
@@ -115,6 +120,17 @@ the hover.
 
 The daemon's root allowlist is not cosmetic. `mode:"new"` targets must sit
 inside a root enumerated from `providers.json`, compared after resolving
-symlinks. If your config sets `opt.exrc = true`, launching Neovim in an
-arbitrary directory that happens to contain a `.nvim.lua` would be remote code
-execution — the allowlist is what prevents a link from choosing that directory.
+symlinks, so a link never chooses the directory Neovim is launched in.
+
+Be precise about what that buys, because an earlier version of this note was
+not. With `opt.exrc = true`, an attacker-chosen spawn directory is *not*
+arbitrary code execution: since 0.9 Neovim sources `.nvim.lua`, `.nvimrc` or
+`.exrc` only when the file is already in the trust list (`:help trust`), keyed
+on a hash of its contents. So the allowlist is not the thing keeping an unvetted
+`.nvim.lua` from running. It is what stops a link picking which of your
+already-trusted project configs gets sourced, and where the editor you are about
+to type into is rooted.
+
+On 0.12 the search also walks every parent directory rather than the cwd alone,
+so the boundary is looser there than one directory. It does not on 0.11, the
+floor this plugin declares, so no claim above depends on it.

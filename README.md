@@ -17,6 +17,24 @@ Nothing here knows about a specific code host. That lives in
 `~/.local/share/codelink/providers.json` (see `providers.schema.md`), outside
 this repo.
 
+## For agents
+
+Use the skill. `skills/codelink-config/` covers provider authoring and
+validation, new-machine bootstrap, injection scope, Neovim root markers, and a
+diagnosis table for every known failure mode.
+
+```sh
+mkdir -p ~/.claude/skills
+ln -sfn "$(cd <checkout>/skills/codelink-config && pwd -P)" \
+        ~/.claude/skills/codelink-config
+```
+
+Then ask for it by name (`/codelink-config`), or read
+`skills/codelink-config/SKILL.md` directly if your harness has no skill
+mechanism. Like everything else tracked here it is host-agnostic: it teaches the
+*shape* of a provider entry and how to prove one works, never which sites you
+use.
+
 ## Install
 
 The repo is a Neovim plugin as well as the daemon and the extension it needs, so
@@ -38,6 +56,26 @@ keypair and starter configs, then prints two things you have to act on:
    plugin manager's clone, e.g. `~/.local/share/nvim/lazy/codelink/extension`).
    Check the id on the card matches the one printed — if it doesn't, the
    manifest lost its `key` and every request will 403.
+
+Two costs are worth knowing before you paste that line, because both are larger
+than a plugin spec looks.
+
+**`build` installs a background daemon, and re-runs on every update.** That one
+line means a `:Lazy sync` compiles a Go binary, codesigns it, and
+`launchctl bootstrap`s a LaunchAgent that starts at login and stays up —
+triggered by a plugin update, with no further prompt. That is the whole point
+(one line installs all three parts), but if you would rather a plugin manager
+not do it unattended, drop the `build` key and run `./install.sh` yourself; see
+*Installing without a plugin manager* below.
+
+**The extension reads every page.** Its content script is declared on
+`<all_urls>`, which Chromium's card renders as *"Read and change all your data
+on all websites"*. It is the honest cost of the design: a button has to be able
+to appear on any page that merely *mentions* a repo link — a local HTML report,
+a ticket, a chat log — and a content script scoped to the code hosts cannot do
+that. The provider `inject` field narrows injection to match patterns you pick
+(`providers.schema.md`); the price of narrowing is that links on a page you left
+out get no button and no error saying why.
 
 ### Requirements
 
@@ -145,26 +183,6 @@ rebuilds, re-signs, re-renders the LaunchAgent plist, regenerates the manifest
 and kickstarts the agent. Run it again after moving the checkout: the plist's
 absolute paths are the only thing that does not follow by itself.
 
-## The agent skill
-
-`skills/codelink-config/` is a Claude Code skill covering provider authoring and
-validation, new-machine bootstrap, injection scope, Neovim root markers, and the
-diagnosis table for every known failure mode. It ships with the repo so an agent
-with a clone can install it on demand:
-
-```sh
-mkdir -p ~/.claude/skills
-ln -sfn "$(cd <checkout>/skills/codelink-config && pwd -P)" \
-        ~/.claude/skills/codelink-config
-```
-
-Then ask for it by name (`/codelink-config`) or just describe the task — the
-description covers the usual triggers.
-
-Like everything else tracked here it is deliberately host-agnostic: it teaches
-the *shape* of a provider entry and how to prove one works, never which sites
-you use.
-
 ## The code-signing identity
 
 Worth doing once. macOS gates Apple Events behind TCC, and an **unsigned**
@@ -211,9 +229,23 @@ local `curl` can send any header it likes, and the token only raises that to
 The control that still has teeth is the **root allowlist**: `mode:"new"` targets
 must be one of the roots enumerated from `providers.json`, compared after
 `filepath.EvalSymlinks`, and every resolved path must sit inside an allowed root
-after cleaning. This matters concretely if your nvim config sets
-`opt.exrc = true` — launching nvim in an arbitrary directory that happens to
-contain a `.nvim.lua` would then be remote code execution.
+after cleaning. What it buys is exactly one thing: a link never chooses the
+directory an editor is launched in.
+
+That is worth having if your config sets `opt.exrc = true`, but it is not what
+stands between you and code execution, and this file used to claim otherwise.
+Neovim has not sourced a `.nvim.lua` on sight since 0.9 — `'exrc'` executes
+`.nvim.lua`, `.nvimrc` or `.exrc` **only if the file is already in the trust
+list** (`:help trust`), keyed on a hash of its contents, and prompts for
+anything else. What the allowlist actually denies an attacker is the choice of
+which of your **already-trusted** project configs gets sourced, and the choice
+of where an editor you are about to type into is rooted. Both are worth denying;
+neither is arbitrary RCE.
+
+Neovim **0.12** additionally searches every parent directory, not just the cwd,
+which widens the first of those — a spawn deep inside a trusted checkout picks
+up that checkout's exrc regardless of how far down it lands. That does not apply
+on the 0.11 floor above, so nothing here rests on it.
 
 ## Credits
 
