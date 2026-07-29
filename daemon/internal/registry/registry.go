@@ -16,6 +16,10 @@ import (
 	"syscall"
 )
 
+// maxEntrySize caps how much of a registry entry is ever read. The Neovim side
+// writes a few hundred bytes; a megabyte of it is not one of ours.
+const maxEntrySize = 64 << 10
+
 // Instance is one live (or recently dead) Neovim instance.
 type Instance struct {
 	V              int     `json:"v"`
@@ -123,6 +127,17 @@ func (r *Registry) List() ([]*Instance, []string) {
 			continue
 		}
 		p := filepath.Join(r.Dir, e.Name())
+		// Only ever open a plain file, and only a small one. List() runs on
+		// every request, so a FIFO dropped in here as hang.json would block the
+		// ReadFile until someone writes to it and wedge every endpoint at once;
+		// a device node or a huge file is the same denial in a slower form.
+		// Such an entry is left on disk rather than pruned — it is not ours to
+		// delete, and deleting the thing we refused to read is how a bug like
+		// this turns into data loss.
+		fi, err := os.Lstat(p)
+		if err != nil || !fi.Mode().IsRegular() || fi.Size() > maxEntrySize {
+			continue
+		}
 		raw, err := os.ReadFile(p)
 		if err != nil {
 			continue

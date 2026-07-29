@@ -1,11 +1,14 @@
 package registry
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // env is a throwaway instances+sock directory pair.
@@ -201,6 +204,89 @@ func TestListPrunesCorruptAndSocketlessEntries(t *testing.T) {
 		if _, err := os.Stat(p); !os.IsNotExist(err) {
 			t.Errorf("%s survived pruning", filepath.Base(p))
 		}
+	}
+}
+
+// TestListRefusesEntriesItMustNotRead is the regression for List() opening
+// whatever happens to be named *.json in the instances directory. The FIFO case
+// is the sharp one: os.ReadFile on it blocks until someone writes, and because
+// every endpoint calls List() the whole daemon hangs with it. Hence the timeout
+// below — an unfixed List() does not fail this test, it never returns.
+func TestListRefusesEntriesItMustNotRead(t *testing.T) {
+	tests := []struct {
+		name string
+		make func(t *testing.T, path string)
+	}{
+		{
+			name: "fifo",
+			make: func(t *testing.T, path string) {
+				if err := syscall.Mkfifo(path, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "oversized file",
+			make: func(t *testing.T, path string) {
+				if err := os.WriteFile(path, bytes.Repeat([]byte("x"), maxEntrySize+1), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			// Unlike the cases above this one passed before the Lstat guard
+			// existed — the ReadDir loop's own e.IsDir() already covered it.
+			// Kept to pin that older guard, not as a regression test for this
+			// one: deleting the Lstat check leaves this subtest green.
+			name: "directory named like an entry",
+			make: func(t *testing.T, path string) {
+				if err := os.MkdirAll(path, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			hostile := filepath.Join(e.dir, "hostile.json")
+			tc.make(t, hostile)
+
+			// A genuine entry alongside it: refusing the hostile one must not
+			// cost the caller the instances it came for.
+			sockPath := filepath.Join(e.sock, "good.sock")
+			e.write(t, "good", Instance{
+				V: 1, PID: os.Getpid(), Servername: ptr(sockPath),
+				Cwd: "/tmp", Label: "alive",
+			}, true)
+
+			type result struct {
+				list   []*Instance
+				pruned []string
+			}
+			done := make(chan result, 1)
+			go func() {
+				list, pruned := e.reg.List()
+				done <- result{list, pruned}
+			}()
+
+			var got result
+			select {
+			case got = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("List() never returned: %s must be refused, not opened", tc.name)
+			}
+
+			if len(got.list) != 1 || got.list[0].Label != "alive" {
+				t.Fatalf("live instance was lost: list=%v pruned=%v", got.list, got.pruned)
+			}
+			// Refused, not pruned: the daemon does not delete a file it
+			// declined to even read.
+			if _, err := os.Lstat(hostile); err != nil {
+				t.Errorf("%s was removed from the instances directory: %v", tc.name, err)
+			}
+		})
 	}
 }
 

@@ -2,6 +2,7 @@ package roots
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -144,6 +145,29 @@ func TestTouchRecentIsAnLRUCappedAt20(t *testing.T) {
 		if seen[p] > 1 {
 			t.Errorf("duplicate entry %q in the LRU", p)
 		}
+	}
+}
+
+// TestProbeCacheIsBounded is the regression for a cache that only ever grew:
+// its key embeds repoPath, which comes off the wire, so a page asking about a
+// stream of unique paths could otherwise inflate the map for as long as the
+// daemon runs.
+func TestProbeCacheIsBounded(t *testing.T) {
+	m := NewManager(t.TempDir())
+	rs := []Root{{Path: t.TempDir()}}
+	for i := range probeCap * 2 {
+		m.Probe(rs, fmt.Sprintf("no/such/path/%d/x.go", i))
+	}
+
+	m.mu.RLock()
+	n := len(m.probes)
+	m.mu.RUnlock()
+
+	if n > probeCap {
+		t.Errorf("probe cache holds %d entries, want at most %d", n, probeCap)
+	}
+	if n == 0 {
+		t.Error("probe cache is empty, so eviction threw away the whole point of it")
 	}
 }
 

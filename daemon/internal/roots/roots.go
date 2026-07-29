@@ -36,6 +36,16 @@ const (
 	negativeTTL = 10 * time.Second
 	probeBudget = 400 * time.Millisecond
 	recentCap   = 20
+
+	// probeCap bounds the probe cache. Its key embeds repoPath, which arrives
+	// straight off the wire, so without a ceiling a page that asks about a
+	// stream of unique paths grows the map until the daemon is killed — and the
+	// only other eviction, the flush in mounts(), fires just when the mount set
+	// changes. The cache exists to spare the handful of paths a human actually
+	// hovers a cold ~500ms stat, and that working set is tiny, so the cap is
+	// far above any real usage and the crude eviction below never runs in
+	// practice.
+	probeCap = 1024
 )
 
 // Root is one expanded local checkout.
@@ -312,21 +322,65 @@ func (m *Manager) Probe(rs []Root, repoPath string) []Candidate {
 
 func cacheKey(root, repoPath string) string { return root + "\x00" + repoPath }
 
-func (m *Manager) cached(root, repoPath string) (probeResult, bool) {
-	m.mu.RLock()
-	pr, ok := m.probes[cacheKey(root, repoPath)]
-	m.mu.RUnlock()
-	if !ok {
-		return probeResult{}, false
-	}
+// expired applies the asymmetric TTL: a miss is re-checked ten times sooner
+// than a hit, because a checkout gains files far more often than it loses them.
+func expired(pr probeResult, now time.Time) bool {
 	ttl := negativeTTL
 	if pr.ok {
 		ttl = positiveTTL
 	}
-	if time.Since(pr.at) > ttl {
+	return now.Sub(pr.at) > ttl
+}
+
+func (m *Manager) cached(root, repoPath string) (probeResult, bool) {
+	key := cacheKey(root, repoPath)
+	m.mu.RLock()
+	pr, ok := m.probes[key]
+	m.mu.RUnlock()
+	if !ok {
+		return probeResult{}, false
+	}
+	if expired(pr, time.Now()) {
+		// Drop it here rather than leaving it for the eventual re-probe to
+		// overwrite: an entry nobody looks up again is dead weight either way,
+		// but while it sits in the map it occupies one of probeCap's slots and
+		// pushes a live entry towards eviction.
+		m.mu.Lock()
+		if cur, still := m.probes[key]; still && expired(cur, time.Now()) {
+			delete(m.probes, key)
+		}
+		m.mu.Unlock()
 		return probeResult{}, false
 	}
 	return pr, true
+}
+
+// store records a probe result, making room first when the cache is full.
+func (m *Manager) store(key string, pr probeResult) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.probes[key]; !ok && len(m.probes) >= probeCap {
+		m.evictLocked()
+	}
+	m.probes[key] = pr
+}
+
+// evictLocked frees a slot: expired entries first, then arbitrary ones. Go
+// randomises map iteration, and "arbitrary" is good enough here — evicting a
+// still-warm entry costs one re-probe, never a wrong answer.
+func (m *Manager) evictLocked() {
+	now := time.Now()
+	for k, pr := range m.probes {
+		if expired(pr, now) {
+			delete(m.probes, k)
+		}
+	}
+	for k := range m.probes {
+		if len(m.probes) < probeCap {
+			return
+		}
+		delete(m.probes, k)
+	}
 }
 
 // probeOne runs the resolve against one root under a hard time budget. os.Stat
@@ -350,9 +404,7 @@ func (m *Manager) probeOne(root, repoPath string) probeResult {
 		// not stall every subsequent hover, but re-probe again soon.
 		pr = probeResult{ok: false, at: time.Now()}
 	}
-	m.mu.Lock()
-	m.probes[cacheKey(root, repoPath)] = pr
-	m.mu.Unlock()
+	m.store(cacheKey(root, repoPath), pr)
 	return pr
 }
 
@@ -449,10 +501,13 @@ func (m *Manager) TouchRecent(root string) {
 // Allowed reports whether dir is one of the enumerated roots, comparing
 // physical paths on both sides.
 //
-// SECURITY CONTROL, not tidiness: the user's nvim config sets opt.exrc = true,
-// so launching nvim with an attacker-chosen cwd that contains a .nvim.lua is
-// remote code execution. Only directories the daemon itself enumerated from
-// providers.json may ever be used as a spawn target.
+// SECURITY CONTROL, not tidiness: a user's nvim config may set opt.exrc = true,
+// so the cwd nvim is launched in is searched for a project-local .nvim.lua
+// (0.12 also walks its parents). Since 0.9 nvim sources one only if it is on
+// the |trust| list, so an attacker-chosen cwd is not code execution on its own;
+// what it decides is which trusted config runs and where the user's editor is
+// rooted. Only directories the daemon itself enumerated from providers.json may
+// ever be used as a spawn target.
 func Allowed(rs []Root, dir string) (Root, bool) {
 	want := resolve.Canonical(dir)
 	for _, r := range rs {

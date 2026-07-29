@@ -32,7 +32,12 @@ const (
 	FocusNone      = "none"      // focusing was not attempted
 )
 
+// Both helpers are named by absolute path. The daemon runs from a LaunchAgent
+// whose PATH leads with a group-writable Homebrew bin directory, so resolving
+// them through $PATH would hand anything able to write there the choice of what
+// the daemon executes — and it executes them to open an editor.
 const osascriptBin = "/usr/bin/osascript"
+const openBin = "/usr/bin/open"
 const appPath = "/Applications/Ghostty.app"
 
 // Client owns the spawn_id -> terminal id map used for exact focusing.
@@ -128,7 +133,7 @@ func (c *Client) spawnFallback(ctx context.Context, workdir, nvimBin string) err
 	// example uses --flag=value. Passing the value as a separate argv element
 	// leaves the flag valueless and the directory a stray positional.
 	// -e stays last: it consumes the remainder of the command line.
-	cmd := exec.CommandContext(ctx, "open", "-na", appPath, "--args",
+	cmd := exec.CommandContext(ctx, openBin, "-na", appPath, "--args",
 		"--working-directory="+workdir, "-e", nvimBin)
 	return cmd.Run()
 }
@@ -246,7 +251,7 @@ func (c *Client) FocusByWorkingDir(ctx context.Context, launchCwd string) error 
 // ActivateApp raises Ghostty without targeting a surface (tier 3). It uses
 // `open -a`, which needs no Automation permission and therefore always works.
 func (c *Client) ActivateApp(ctx context.Context) error {
-	return exec.CommandContext(ctx, "open", "-a", appPath).Run()
+	return exec.CommandContext(ctx, openBin, "-a", appPath).Run()
 }
 
 // Focus walks the three tiers and reports which one succeeded.

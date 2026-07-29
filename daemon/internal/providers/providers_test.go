@@ -221,6 +221,35 @@ func TestParse(t *testing.T) {
 			url:    fileURL + "#some-anchor",
 			wantOK: true, path: fileRepoPath, refDef: true,
 		},
+		{
+			name:   "plain http is accepted",
+			url:    "http://a.example.com/code/owner/x.go",
+			wantOK: true, path: "owner/x.go", refDef: true,
+		},
+		{
+			// url.Parse lower-cases the scheme, so the check must not compare
+			// against the raw URL text.
+			name:   "upper-case scheme is still http",
+			url:    "HTTPS://a.example.com/code/owner/x.go",
+			wantOK: true, path: "owner/x.go", refDef: true,
+		},
+		{
+			// url.Parse hands each of these a Host, so with no scheme check
+			// they match a provider on the host alone.
+			name:   "javascript: URL is not a code host",
+			url:    "javascript://a.example.com/code/owner/x.go",
+			wantOK: false,
+		},
+		{
+			name:   "file: URL is not a code host",
+			url:    "file://a.example.com/code/owner/x.go",
+			wantOK: false,
+		},
+		{
+			name:   "ftp: URL is not a code host",
+			url:    "ftp://a.example.com/code/owner/x.go",
+			wantOK: false,
+		},
 	}
 
 	for _, tc := range tests {

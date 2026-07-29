@@ -1,16 +1,23 @@
 // Package httpapi serves the loopback HTTP API the browser extension talks to.
 //
-// Threat model. The daemon can launch an editor with an arbitrary working
-// directory, and the user's nvim config sets opt.exrc = true, which makes nvim
-// source a .nvim.lua found in its cwd. A spawn target chosen by an attacker is
-// therefore remote code execution. Three controls follow from that, and none of
-// them is cosmetic:
+// Threat model. The daemon can launch an editor with a caller-chosen working
+// directory, and a user's nvim config may set opt.exrc = true, so nvim looks
+// there for a project-local .nvim.lua. Since 0.9 nvim sources one only if it is
+// on the |trust| list, keyed on a hash of its contents, and prompts otherwise —
+// so an attacker-chosen cwd is not arbitrary code execution. What a caller who
+// picks the cwd does get is the choice of which already-trusted project config
+// runs, and of where the user's editor is rooted. (0.12 additionally searches
+// every parent directory, widening the first of those. It does not apply on the
+// 0.11 floor this project supports, so nothing below rests on it.) Four
+// controls follow, and none of them is cosmetic:
 //
 //  1. the listener is bound to 127.0.0.1 explicitly (never 0.0.0.0, and
 //     deliberately no ::1 listener);
 //  2. every request must present a shared secret, so a page in the browser
 //     cannot drive the daemon even from localhost;
-//  3. spawn targets must be one of the roots the daemon itself enumerated from
+//  3. a request must be addressed to that same loopback host, so a rebound DNS
+//     name cannot reach 1 and 2 by turning itself into a same-origin caller;
+//  4. spawn targets must be one of the roots the daemon itself enumerated from
 //     providers.json, and every resolved path must sit inside such a root.
 package httpapi
 
@@ -28,6 +35,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -171,7 +179,14 @@ func writeTokenJS(path, token string) error {
 		return err
 	}
 	body := fmt.Sprintf("self.CODELINK_TOKEN = '%s';\n", token)
-	return os.WriteFile(path, []byte(body), 0o600)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		return err
+	}
+	// WriteFile applies its mode only when it CREATES the file, so a
+	// token.gen.js already sitting in the checkout — left by an earlier build,
+	// or created by anything with a laxer umask — keeps whatever permissions it
+	// had, and the shared secret stays world-readable.
+	return os.Chmod(path, 0o600)
 }
 
 // allowedOrigin is the single browser origin permitted to talk to the daemon.
@@ -231,7 +246,7 @@ func (w *statusRecorder) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
-// guard enforces CORS and authentication.
+// guard enforces the Host allowlist, CORS and authentication.
 //
 // The CORS policy IS the anti-CSRF mechanism. Only the extension's own origin
 // is ever echoed back; any other web page — including one on a host the
@@ -240,6 +255,10 @@ func (w *statusRecorder) WriteHeader(code int) {
 // daemon is reachable on loopback.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.hostOK(r.Host) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		origin := r.Header.Get("Origin")
 		allowed := s.allowedOrigin()
 		originOK := allowed != "" && origin == allowed
@@ -271,6 +290,29 @@ func (s *Server) guard(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// hostOK reports whether the request addressed the daemon by the loopback name
+// it actually listens on.
+//
+// This is the anti-DNS-rebinding control. A page on attacker.example whose name
+// is re-pointed at 127.0.0.1 becomes SAME-ORIGIN with the daemon's port: the
+// browser then sends no preflight, no Origin header, and allows arbitrary
+// custom headers — so the CORS policy above never even runs. The one thing such
+// a request cannot forge is the Host header, which still carries the attacker's
+// name. The token remains the real barrier; this just removes a whole class of
+// attempt before it reaches it.
+//
+// A Host without a port is rejected too: the extension always talks to
+// 127.0.0.1:<port>, and no rebinding case needs that shape accepted.
+func (s *Server) hostOK(host string) bool {
+	h, port, err := net.SplitHostPort(host)
+	if err != nil || port != strconv.Itoa(s.opts.Port) {
+		return false
+	}
+	// No ::1 here on purpose, matching Serve: exactly one address is listened
+	// on, so exactly one is accepted.
+	return h == "127.0.0.1" || h == "localhost"
 }
 
 func (s *Server) tokenOK(got string) bool {
@@ -580,8 +622,10 @@ func (s *Server) openExisting(ctx context.Context, req openRequest, allRoots []r
 func (s *Server) openNew(ctx context.Context, req openRequest, allRoots []roots.Root) openResponse {
 	// SECURITY: the spawn target must be one of the roots the daemon itself
 	// enumerated. Because nvim runs with opt.exrc = true, accepting an
-	// arbitrary directory here would let a caller pick a cwd containing a
-	// hostile .nvim.lua, i.e. arbitrary code execution.
+	// arbitrary directory here would hand a caller the choice of which trusted
+	// .nvim.lua — that directory's or any parent's — is sourced, and of where
+	// the user's editor lands. The trust list stops an unknown file from
+	// running silently; it does not make the cwd the caller's to pick.
 	root, ok := roots.Allowed(allRoots, req.Target)
 	if !ok {
 		return fail(CodeRootNotAllowed, "%q is not one of the configured roots", req.Target)
@@ -594,15 +638,7 @@ func (s *Server) openNew(ctx context.Context, req openRequest, allRoots []roots.
 		return fail(CodeRootNotAllowed, "resolved path is outside every configured root: %s", local)
 	}
 
-	// Open the window at the project directory when we know it, so the shell
-	// and nvim start somewhere useful.
-	workdir := root.Path
-	if project, _ := resolve.Project(req.RepoPath, s.projectMarkers()); project != "" {
-		cand := filepath.Join(root.Path, filepath.FromSlash(project))
-		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
-			workdir = cand
-		}
-	}
+	workdir := s.spawnWorkdir(root, req.RepoPath, allRoots)
 
 	spawnID, err := ghostty.NewSpawnID()
 	if err != nil {
@@ -636,6 +672,35 @@ func (s *Server) openNew(ctx context.Context, req openRequest, allRoots []roots.
 	}
 	s.roots.TouchRecent(root.Path)
 	return openResponse{OK: true, Instance: inst.ID(), Focused: s.maybeFocus(ctx, req, inst)}
+}
+
+// spawnWorkdir picks the directory the new window opens in: the project
+// directory when we know it, so the shell and nvim start somewhere useful, and
+// the root itself otherwise.
+//
+// SECURITY: this cwd is where nvim begins its exrc search, which walks upwards
+// from here, so it needs the same physical containment check as the resolved
+// file — containment is what keeps that upward walk on known ground. The project
+// component comes from the caller's repoPath and filepath.Join cleans it only
+// LEXICALLY, which a directory symlink inside the root pointing out of it
+// survives untouched. The check already performed on the resolved file does not
+// cover this: a file behind such a symlink can canonicalise back INTO the root
+// and pass, while the cwd it was reached through still sits outside. Failing the
+// check is not a request error — falling back to root.Path, which is allowed by
+// construction, loses nothing but a nicer starting directory.
+func (s *Server) spawnWorkdir(root roots.Root, repoPath string, allRoots []roots.Root) string {
+	project, _ := resolve.Project(repoPath, s.projectMarkers())
+	if project == "" {
+		return root.Path
+	}
+	cand := filepath.Join(root.Path, filepath.FromSlash(project))
+	if fi, err := os.Stat(cand); err != nil || !fi.IsDir() {
+		return root.Path
+	}
+	if !roots.PathAllowed(allRoots, cand) {
+		return root.Path
+	}
+	return cand
 }
 
 func (s *Server) waitForSpawn(ctx context.Context, spawnID string) *registry.Instance {

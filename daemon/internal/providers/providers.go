@@ -182,6 +182,14 @@ func (c *Config) Parse(rawURL string) (*Parsed, bool) {
 	if err != nil || u.Host == "" {
 		return nil, false
 	}
+	// url.Parse is happy to give "javascript://code.example.com/repo/x" a host,
+	// and so is "file://". Matching those on the host alone would let a link the
+	// browser would never navigate as a code host drive a resolve, and the
+	// daemon does not delegate that judgement to the content script. Parse
+	// lower-cases the scheme, so a literal comparison is enough.
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, false
+	}
 	p := c.ForHost(u.Hostname())
 	if p == nil {
 		return nil, false
