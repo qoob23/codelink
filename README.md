@@ -26,6 +26,10 @@ your plugin manager can own the whole thing. With lazy.nvim:
 { 'qoob23/codelink', build = './install.sh' }
 ```
 
+While the repo is private, add `url = 'git@github.com:qoob23/codelink.git'` —
+lazy.nvim clones over HTTPS, which has no credentials to offer, and the failure
+(`could not read Username for 'https://github.com'`) does not mention auth.
+
 `build` compiles the daemon, signs it, generates the extension manifest and
 loads the LaunchAgent. On a first install it also generates the extension
 keypair and starter configs, then prints two things you have to act on:
