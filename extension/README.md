@@ -21,6 +21,7 @@ lookup and no line-number arithmetic — it forwards the hovered URL to the loca
 | `nvim-mark.svg` | The Neovim mark, recolored to `currentColor`. Source for the inlined SVG and for the PNG icons. |
 | `icons/16.png`, `icons/48.png`, `icons/128.png` | Toolbar / extensions-page icons. |
 | `LICENSES.md` | Attribution for the Neovim mark (Jason Long, CC BY 3.0) and the statement of modification. |
+| `test/` | jsdom regression tests for the overlay state machine. `cd test && npm install && npm test`. |
 
 **Generated, not committed** (all three are gitignored and are produced by the
 Go daemon — do not hand-edit them, they get overwritten):
@@ -265,6 +266,25 @@ and re-opens the picker with the fresh list.
   `stopPropagation` cannot suppress it), and the overlay host is appended to
   `document.documentElement`, not `<body>`, because a single-page app re-renders
   `<body>` and would take the overlay with it.
+- **Only a real cursor talks to the daemon.** A content script shares the DOM
+  and the event system with the page, so the `document`-level `mouseover` and
+  `keydown` listeners check `event.isTrusted`. Without that, any page script
+  could dispatch a hover at a link it created and drive `/resolve` — or, with
+  the picker open, dispatch Enter and drive `/open`. Since the daemon answers by
+  stat-ing the path across every configured checkout root, and the button is
+  hit-testable through `document.elementFromPoint` even inside a closed shadow
+  root, that leaked one bit per URL: whether a given repo is cloned on this
+  machine. The teardown listeners (`mouseout`, `pointerdown`, `blur`) and the
+  reposition listeners (`scroll`, `resize`) deliberately do **not** check it —
+  they only put the overlay back to rest or move it, and pages fire synthetic
+  scroll/resize events routinely.
+- **Button size lives in three places.** `.cl-btn` is 33px (1.5× the 22px it
+  started at); everything drawn inside the circle is that same 1.5 applied to
+  *its own* original rather than to an intermediate value, the tooltip's offset
+  is button + gap, and `content.js` repeats the number as `var BTN` to clamp the
+  panel into the viewport and centre it on the hovered link's line box. Change
+  one, change all three — `test/button-geometry.test.js` fails if they drift, and
+  also fails if `content.css` was edited without re-running the inliner.
 
 ## Troubleshooting
 

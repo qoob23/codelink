@@ -28,6 +28,7 @@
   var CACHE_MAX = 400; // resolve-cache ceiling, LRU-evicted
   var CACHE_TTL = 10000; // ms a machine-state-dependent resolve stays fresh
   var GAP = 4; // px between the link box and the button
+  var BTN = 33; // .cl-btn width/height — must match content.css, see reposition()
   var KICKSTART = 'launchctl kickstart -k gui/$(id -u)/com.qoob23.codelink';
   var SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -110,8 +111,17 @@
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 22px;
-  height: 22px;
+  /* 33px, i.e. 1.5x the 22px this started at. Every other size in this block and
+   * the three below it is that same 1.5 applied to its own original, never to an
+   * intermediate value, so the ratio stays exactly recoverable if it is resized
+   * again. content.js repeats the 33 as its BTN constant — both as the
+   * offsetWidth/offsetHeight fallback and as the height it centres the panel on
+   * the link's line box against — so changing it here alone makes the button sit
+   * off its link. The 1px border is deliberately NOT scaled: it is a hairline
+   * shared with the tooltip and the picker, and thickening only the button's
+   * would break that family. */
+  width: 33px;
+  height: 33px;
   padding: 0;
   margin: 0;
   border: 1px solid var(--cl-border);
@@ -145,8 +155,8 @@
 
 .cl-btn .cl-mark {
   display: block;
-  width: 10px;
-  height: 12px;
+  width: 15px;
+  height: 18px;
   color: inherit;
   fill: currentColor;
   pointer-events: none;
@@ -164,9 +174,11 @@
 .cl-spin {
   display: none;
   position: absolute;
-  inset: 2px;
+  inset: 3px;
   border-radius: 50%;
-  border: 1.5px solid transparent;
+  /* 2.25 rather than a rounded 2: this ring is under a continuous rotate, so it
+   * never lands on the pixel grid at any frame and an integer buys nothing. */
+  border: 2.25px solid transparent;
   border-top-color: var(--cl-accent);
   animation: cl-rot 620ms linear infinite;
   pointer-events: none;
@@ -202,9 +214,17 @@
 
 .cl-check {
   display: none;
-  width: 11px;
-  height: 11px;
+  /* 16.5, the exact 1.5, deliberately not rounded to 16 or 17: this is vector
+   * art, so a fractional box costs nothing, and the box scale is what sets the
+   * painted stroke weight (see below) — rounding the box would quietly take the
+   * checkmark's stroke off the 1.5 ratio the rest of the button follows. */
+  width: 16.5px;
+  height: 16.5px;
   stroke: currentColor;
+  /* NOT scaled with the box. content.js builds this svg with viewBox="0 0 12 12",
+   * so stroke-width is in viewBox user units and the viewBox->box scale already
+   * multiplied the painted stroke by 1.5 when the width above went 11px ->
+   * 16.5px. Scaling this number too would compound to 2.25x. */
   stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -220,13 +240,13 @@
 .cl-badge {
   display: none;
   position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 7px;
-  height: 7px;
+  top: -3px;
+  right: -3px;
+  width: 10.5px;
+  height: 10.5px;
   border-radius: 50%;
   background: var(--cl-warn);
-  box-shadow: 0 0 0 1.5px var(--cl-surface);
+  box-shadow: 0 0 0 2.25px var(--cl-surface);
   pointer-events: none;
 }
 
@@ -239,7 +259,9 @@
 .cl-tip {
   display: none;
   position: absolute;
-  top: 26px;
+  /* clears the button: its 33px plus the same 4px gap content.js keeps between
+   * the link and the button. Derived, not chosen — it must track .cl-btn. */
+  top: 37px;
   left: 0;
   box-sizing: border-box;
   max-width: 272px;
@@ -268,7 +290,7 @@
 
 .cl-tip.is-above {
   top: auto;
-  bottom: 26px;
+  bottom: 37px;
 }
 
 .cl-tip-cmd {
@@ -864,7 +886,7 @@
       /*
        * Held open. Fall back to the last known anchor rect rather than simply
        * returning: the panel must still be re-clamped against its CURRENT size.
-       * The picker is several times larger than the 22px button it replaces, so
+       * The picker is several times larger than the 33px button it replaces, so
        * keeping the button's old transform pushes it off the bottom or right
        * edge, where it cannot be reached or dismissed.
        */
@@ -878,12 +900,31 @@
       lastRect = r;
     }
 
-    var pw = panel.offsetWidth || 22;
-    var ph = panel.offsetHeight || 22;
+    var pw = panel.offsetWidth || BTN;
+    var ph = panel.offsetHeight || BTN;
 
-    // top-right of the link, clamped into the viewport
+    /*
+     * Just past the link's right edge, vertically centred on its line box, then
+     * clamped into the viewport.
+     *
+     * The vertical rule used to be a flat `r.top - GAP`, which silently assumed
+     * the button was about as tall as a line of text. Its error against true
+     * centring is (BTN - r.height) / 2 - GAP, so it was never actually right:
+     * even at the original 22px the circle sat 3px HIGH on a 20px line, and it
+     * drifts further with every px the two differ — which a code host guarantees,
+     * mixing headings, table rows and small print on one page. Centre explicitly
+     * instead; that holds at any button size and any line height.
+     *
+     * BTN rather than ph on purpose: with the picker open ph is the picker's
+     * height, and centring that on one line of text would drag it far off its
+     * link — the picker is meant to appear where the button was.
+     *
+     * Horizontally the button never covers the link itself, only whatever
+     * follows it on the line. At this size that is unavoidable, and it is why
+     * the overlay exists for the duration of a hover and not a moment longer.
+     */
     var left = r.right + GAP;
-    var top = r.top - GAP;
+    var top = r.top + (r.height - BTN) / 2;
     left = Math.max(GAP, Math.min(left, vw - pw - GAP));
     top = Math.max(GAP, Math.min(top, vh - ph - GAP));
 
@@ -1456,9 +1497,32 @@
    * relatedTarget containment check below makes them exactly equivalent, and
    * unlike direct binding it needs no cleanup when the SPA swaps nodes out.
    */
+
+  /*
+   * isTrusted is the ENTIRE access control on a listener bound to the page's own
+   * document. We share the DOM and the event system with the page, so any script
+   * on it can build a MouseEvent and dispatch it at an invisible <a> it just
+   * created; nothing else in the event distinguishes that from a cursor. Links
+   * are never fetched, so an attacker just writes a real provider hostname into
+   * the href and drives /resolve at will from any origin the manifest matches.
+   * Each forged hover makes the daemon stat that path across every configured
+   * checkout root, and while the overlay's shadow root is closed, the button is
+   * still hit-testable via document.elementFromPoint at coordinates the page
+   * chose — one bit per URL, "is this repo cloned here", which enumerates into
+   * the list of private checkouts on the machine. A real cursor is the only
+   * legitimate trigger for talking to the daemon.
+   *
+   * The teardown listeners below (mouseout, pointerdown, blur) deliberately do
+   * NOT check it: their only effect is to return the overlay to its resting
+   * state, which is the safe direction, and a page that wants the overlay gone
+   * can simply remove the anchor. Nor do scroll/resize, which merely reposition
+   * a panel that is already up — and which pages and layout libraries routinely
+   * fire synthetically to force a relayout.
+   */
   document.addEventListener(
     'mouseover',
     function (e) {
+      if (!e.isTrusted) return;
       var a = e.target instanceof Element && e.target.closest('a[href]');
       if (!a || !triage(a.href)) return;
       scheduleShow(a);
@@ -1503,9 +1567,16 @@
   btn.addEventListener('mouseenter', hoverTipForState);
   btn.addEventListener('mouseleave', hideTip);
 
+  /*
+   * Same trust rule as the hover listener, and the stakes are higher: while the
+   * picker is pinned, Enter COMMITS — a forged one sends /open, and forged
+   * arrows move the selection first, so the page would choose which checkout the
+   * user's own picker opens.
+   */
   document.addEventListener(
     'keydown',
     function (e) {
+      if (!e.isTrusted) return;
       if (!pinned) return;
       var k = e.key;
       if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'Enter' || k === 'Escape' || k === 'Tab') {

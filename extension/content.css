@@ -61,8 +61,17 @@
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 22px;
-  height: 22px;
+  /* 33px, i.e. 1.5x the 22px this started at. Every other size in this block and
+   * the three below it is that same 1.5 applied to its own original, never to an
+   * intermediate value, so the ratio stays exactly recoverable if it is resized
+   * again. content.js repeats the 33 as its BTN constant — both as the
+   * offsetWidth/offsetHeight fallback and as the height it centres the panel on
+   * the link's line box against — so changing it here alone makes the button sit
+   * off its link. The 1px border is deliberately NOT scaled: it is a hairline
+   * shared with the tooltip and the picker, and thickening only the button's
+   * would break that family. */
+  width: 33px;
+  height: 33px;
   padding: 0;
   margin: 0;
   border: 1px solid var(--cl-border);
@@ -96,8 +105,8 @@
 
 .cl-btn .cl-mark {
   display: block;
-  width: 10px;
-  height: 12px;
+  width: 15px;
+  height: 18px;
   color: inherit;
   fill: currentColor;
   pointer-events: none;
@@ -115,9 +124,11 @@
 .cl-spin {
   display: none;
   position: absolute;
-  inset: 2px;
+  inset: 3px;
   border-radius: 50%;
-  border: 1.5px solid transparent;
+  /* 2.25 rather than a rounded 2: this ring is under a continuous rotate, so it
+   * never lands on the pixel grid at any frame and an integer buys nothing. */
+  border: 2.25px solid transparent;
   border-top-color: var(--cl-accent);
   animation: cl-rot 620ms linear infinite;
   pointer-events: none;
@@ -153,9 +164,17 @@
 
 .cl-check {
   display: none;
-  width: 11px;
-  height: 11px;
+  /* 16.5, the exact 1.5, deliberately not rounded to 16 or 17: this is vector
+   * art, so a fractional box costs nothing, and the box scale is what sets the
+   * painted stroke weight (see below) — rounding the box would quietly take the
+   * checkmark's stroke off the 1.5 ratio the rest of the button follows. */
+  width: 16.5px;
+  height: 16.5px;
   stroke: currentColor;
+  /* NOT scaled with the box. content.js builds this svg with viewBox="0 0 12 12",
+   * so stroke-width is in viewBox user units and the viewBox->box scale already
+   * multiplied the painted stroke by 1.5 when the width above went 11px ->
+   * 16.5px. Scaling this number too would compound to 2.25x. */
   stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -171,13 +190,13 @@
 .cl-badge {
   display: none;
   position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 7px;
-  height: 7px;
+  top: -3px;
+  right: -3px;
+  width: 10.5px;
+  height: 10.5px;
   border-radius: 50%;
   background: var(--cl-warn);
-  box-shadow: 0 0 0 1.5px var(--cl-surface);
+  box-shadow: 0 0 0 2.25px var(--cl-surface);
   pointer-events: none;
 }
 
@@ -190,7 +209,9 @@
 .cl-tip {
   display: none;
   position: absolute;
-  top: 26px;
+  /* clears the button: its 33px plus the same 4px gap content.js keeps between
+   * the link and the button. Derived, not chosen — it must track .cl-btn. */
+  top: 37px;
   left: 0;
   box-sizing: border-box;
   max-width: 272px;
@@ -219,7 +240,7 @@
 
 .cl-tip.is-above {
   top: auto;
-  bottom: 26px;
+  bottom: 37px;
 }
 
 .cl-tip-cmd {

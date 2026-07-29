@@ -90,6 +90,22 @@ window.Element.prototype.attachShadow = function (init) {
 window.eval(HOSTS_JS);
 window.eval(fs.readFileSync(SRC, 'utf8'));
 
+/*
+ * The overlay only reacts to events the user agent itself produced — a page
+ * script cannot forge a hover and drive the daemon (see untrusted-events.test.js).
+ * Every event jsdom builds is untrusted, and dispatchEvent() re-stamps
+ * isTrusted = false on the way in, exactly as the DOM spec requires, so a test
+ * cannot just set the flag on the event it is about to send. Go through the same
+ * internal dispatch the user agent uses, which leaves the flag alone: `user()`
+ * is a real cursor, and this test simulates a real user throughout.
+ */
+const IMPL = Object.getOwnPropertySymbols(new window.Event('probe'))[0];
+
+function user(target, event) {
+  event[IMPL].isTrusted = true;
+  target[IMPL]._dispatch(event[IMPL]);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const doc = window.document;
 
@@ -107,7 +123,7 @@ function findHost() {
   };
 
   // --- hover -------------------------------------------------------------
-  a.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
+  user(a, new window.MouseEvent('mouseover', { bubbles: true }));
   await sleep(400);
 
   const host = findHost();
@@ -126,7 +142,7 @@ function findHost() {
   check('button element found', !!btn);
   check('panel is-open before click', panel.classList.contains('is-open'), panel.className);
 
-  btn.dispatchEvent(new window.MouseEvent('click', { bubbles: true, composed: true }));
+  user(btn, new window.MouseEvent('click', { bubbles: true, composed: true }));
   await sleep(50);
 
   const picker = openShadow.querySelector('.cl-picker');
@@ -141,13 +157,13 @@ function findHost() {
   // `blur` does not bubble but DOES capture, so a capture listener on window
   // sees every element's blur. picker.focus() blurs the previously focused
   // element, which used to dismiss the picker in the tick it opened.
-  doc.body.dispatchEvent(new window.FocusEvent('blur', { bubbles: false }));
+  user(doc.body, new window.FocusEvent('blur', { bubbles: false }));
   await sleep(10);
   check('picker survives an ELEMENT blur (capture-phase leak)',
         picker.classList.contains('is-on'), 'class=' + picker.className);
 
   // ...but a real window blur must still dismiss it.
-  window.dispatchEvent(new window.FocusEvent('blur', { bubbles: false }));
+  user(window, new window.FocusEvent('blur', { bubbles: false }));
   await sleep(10);
   check('picker closes on a genuine WINDOW blur',
         !picker.classList.contains('is-on'), 'class=' + picker.className);

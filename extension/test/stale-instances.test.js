@@ -131,6 +131,22 @@ window.Element.prototype.attachShadow = function (init) {
 window.eval(HOSTS_JS);
 window.eval(fs.readFileSync(SRC, 'utf8'));
 
+/*
+ * The overlay only reacts to events the user agent itself produced — a page
+ * script cannot forge a hover and drive the daemon (see untrusted-events.test.js).
+ * Every event jsdom builds is untrusted, and dispatchEvent() re-stamps
+ * isTrusted = false on the way in, exactly as the DOM spec requires, so a test
+ * cannot just set the flag on the event it is about to send. Go through the same
+ * internal dispatch the user agent uses, which leaves the flag alone: `user()`
+ * is a real cursor, and this test simulates a real user throughout.
+ */
+const IMPL = Object.getOwnPropertySymbols(new window.Event('probe'))[0];
+
+function user(target, event) {
+  event[IMPL].isTrusted = true;
+  target[IMPL]._dispatch(event[IMPL]);
+}
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const doc = window.document;
 const away = doc.getElementById('elsewhere');
@@ -138,12 +154,12 @@ const away = doc.getElementById('elsewhere');
 const resolves = (url) => sent.filter((m) => m.type === 'resolve' && m.url === url).length;
 
 async function hover(a) {
-  a.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
+  user(a, new window.MouseEvent('mouseover', { bubbles: true }));
   await sleep(400);
 }
 
 async function unhover(a) {
-  a.dispatchEvent(new window.MouseEvent('mouseout', { bubbles: true, relatedTarget: away }));
+  user(a, new window.MouseEvent('mouseout', { bubbles: true, relatedTarget: away }));
   await sleep(300);
 }
 
