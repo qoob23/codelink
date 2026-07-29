@@ -29,6 +29,12 @@
   var CACHE_TTL = 10000; // ms a machine-state-dependent resolve stays fresh
   var GAP = 4; // px between the link box and the button
   var BTN = 33; // .cl-btn width/height — must match content.css, see reposition()
+  var POINTER_DX = 10; // px right of the pointer where the button's left edge lands
+  // Rough tooltip box, used only to pick which side of the button it takes. It
+  // has no layout yet at the moment we decide, and being a few px out only ever
+  // costs a flip that was not strictly needed.
+  var TIP_W = 280;
+  var TIP_H = 96;
   var KICKSTART = 'launchctl kickstart -k gui/$(id -u)/com.qoob23.codelink';
   var SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -95,6 +101,10 @@
   --cl-accent: #57a143;
   --cl-warn: #b26b00;
   --cl-warn-soft: rgba(178, 107, 0, 0.12);
+  /* the can't-resolve cross. Deliberately NOT --cl-warn: an amber button means
+   * "the daemon is down, do something about it", while this one means "there is
+   * nothing here for you" and must not read as the same class of problem. */
+  --cl-miss: #d1443c;
   --cl-shadow: 0 2px 10px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
   --cl-sel: rgba(87, 161, 67, 0.16);
 }
@@ -254,6 +264,61 @@
   display: block;
 }
 
+/* ---------- can't-resolve state ---------- */
+
+/* The daemon answered REPO_NOT_LOCAL / FILE_NOT_LOCAL: the link IS a file in a
+ * repo we understand, we just have no local copy of it. Shown instead of the
+ * usual silent skip so the user learns *why* nothing happens — but it must never
+ * compete with a live button, hence dimmed, smaller and inert. The desaturation
+ * is done through color rather than a filter: .cl-mark is fill:currentColor, so
+ * dimming the colour greys the Neovim mark for free, and a filter here would drag
+ * the red cross below down with it. */
+.cl-btn.is-missing {
+  color: var(--cl-text-dim);
+  background: var(--cl-surface-hi);
+  border-color: var(--cl-border);
+  box-shadow: none;
+  cursor: default;
+}
+
+.cl-btn.is-missing .cl-mark {
+  opacity: 0.45;
+}
+
+/* beats the #panel.is-open .cl-btn scale(1) rule on specificity */
+#panel.is-open .cl-btn.is-missing {
+  transform: scale(0.8);
+}
+
+.cl-btn.is-missing:hover {
+  background: var(--cl-surface-hi);
+}
+
+/* Mirrors .cl-badge — same 10.5px circle, same 2.25px surface ring — in the
+ * opposite corner, so the two can never be confused for one another. */
+.cl-xbadge {
+  display: none;
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  box-sizing: border-box;
+  width: 10.5px;
+  height: 10.5px;
+  border-radius: 50%;
+  background: var(--cl-miss);
+  box-shadow: 0 0 0 2.25px var(--cl-surface);
+  color: #ffffff;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 10.5px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.cl-btn.is-missing .cl-xbadge {
+  display: block;
+}
+
 /* ---------- tooltip ---------- */
 
 .cl-tip {
@@ -288,6 +353,9 @@
   right: 0;
 }
 
+/* Flipped by content.js. The button normally sits ABOVE the hovered link, so
+ * this is the common case, not the edge case: a tooltip hanging below the button
+ * would land straight on the line of code the user is reading. */
 .cl-tip.is-above {
   top: auto;
   bottom: 37px;
@@ -448,6 +516,7 @@
     --cl-accent: #7ec96a;
     --cl-warn: #e0a458;
     --cl-warn-soft: rgba(224, 164, 88, 0.14);
+    --cl-miss: #e5645c;
     --cl-shadow: 0 2px 12px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(255, 255, 255, 0.05);
     --cl-sel: rgba(126, 201, 106, 0.18);
   }
@@ -690,6 +759,14 @@
   badge.className = 'cl-badge';
   btn.appendChild(badge);
 
+  // The can't-resolve cross. Bottom-right, mirroring the non-default-ref dot in
+  // the opposite corner; only ever visible in the 'missing' state.
+  var xbadge = document.createElement('span');
+  xbadge.className = 'cl-xbadge';
+  xbadge.textContent = '✕';
+  xbadge.setAttribute('aria-hidden', 'true');
+  btn.appendChild(xbadge);
+
   panel.appendChild(btn);
 
   var tip = document.createElement('div');
@@ -715,11 +792,12 @@
 
   var anchorEl = null; // the <a> the panel currently belongs to
   var anchorUrl = '';
-  var entry = null; // normalized /resolve payload for anchorUrl
-  var uiMode = 'hidden'; // hidden | loading | ready | down | error | ok | picker
+  var entry = null; // {kind:'ok', data} | {kind:'missing', …} for anchorUrl
+  var uiMode = 'hidden'; // hidden | loading | ready | missing | down | error | ok | picker
   var pinned = false; // picker open: ignore hover-out entirely
   var busy = false; // an /open round trip is in flight: survive a dying anchor
   var lastRect = null; // last good anchor rect, for repositioning past its death
+  var pointerX = null; // clientX of the trusted mouseover that started this show
   var overPanel = false; // pointer is inside the overlay right now
   var pendingAnchor = null; // anchor whose HOVER_DELAY timer is running
 
@@ -728,27 +806,106 @@
   var okTimer = 0;
 
   /*
+   * Settings, mirrored from chrome.storage.local under the single key
+   * "settings". The popup is the only writer; this is a read-only replica kept
+   * in sync through chrome.storage.onChanged, so a toggle takes effect on every
+   * open tab without a reload.
+   *
+   *   { paused: false, warnBadges: true, warnOverrides: {}, debug: false }
+   *
+   * Absent keys fall back to these defaults rather than to undefined, because
+   * the very first hover in a profile that has never opened the popup must
+   * behave exactly like the documented default.
+   */
+  var settings = { paused: false, warnBadges: true, warnOverrides: {}, debug: false };
+
+  function applySettings(raw) {
+    var o = raw && typeof raw === 'object' ? raw : {};
+    settings = {
+      paused: o.paused === true,
+      warnBadges: o.warnBadges !== false,
+      warnOverrides: o.warnOverrides && typeof o.warnOverrides === 'object' ? o.warnOverrides : {},
+      debug: o.debug === true,
+    };
+  }
+
+  // try/catch, not a feature test: with the storage permission missing (an old
+  // profile whose card predates it) every documented default above still stands,
+  // which is the same behaviour as a popup that was never opened.
+  try {
+    chrome.storage.local.get('settings', function (got) {
+      applySettings(got && got.settings);
+    });
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== 'local' || !changes.settings) return;
+      applySettings(changes.settings.newValue);
+      // Pausing must also clear anything already painted — except mid-/open,
+      // where tearing down would orphan the in-flight request's UI.
+      if (settings.paused && uiMode !== 'hidden' && !pinned && !busy) hideNow();
+    });
+  } catch (e) {
+    /* no chrome.storage here: defaults stand */
+  }
+
+  /*
+   * Per-repo override key: "<host>/<owner>/<repo>". The host comes from the URL
+   * that produced the verdict (lowercased, as hostnames are case-insensitive);
+   * owner and repo are echoed verbatim from the daemon, which is the only party
+   * that knows how a provider spells them. The popup builds the identical key
+   * from /repostatus, so the two agree without either side re-parsing a URL.
+   */
+  function overrideKey(url, owner, repo) {
+    var h;
+    try {
+      h = new URL(url, location.href).hostname.toLowerCase();
+    } catch (e) {
+      h = String(location.hostname || '').toLowerCase();
+    }
+    // Lowercased end to end: the daemon matches repos case-insensitively, so a
+    // link spelt /Acme/Widget and a tab at /acme/widget must share one key.
+    return h + '/' + String(owner || '').toLowerCase() + '/' + String(repo || '').toLowerCase();
+  }
+
+  // Effective badge visibility for one link: the per-repo override if there is
+  // one, the global switch otherwise.
+  function badgeVisible(url, owner, repo) {
+    var over = settings.warnOverrides[overrideKey(url, owner, repo)];
+    if (typeof over === 'boolean') return over;
+    return settings.warnBadges;
+  }
+
+  /*
    * Debug channel. The overlay lives in a CLOSED shadow root, so the page
    * console cannot inspect it at all — logging is the only way to see this
    * state machine from outside, and that is exactly what was needed to find the
    * detached-anchor bug (see reposition()). Kept deliberately.
    *
-   *   enable:  localStorage.CODELINK_DEBUG = '1'
-   *   disable: delete localStorage.CODELINK_DEBUG
+   *   enable:  the popup's Debug toggle (settings.debug), or, with no popup and
+   *            no extension storage at hand, localStorage.CODELINK_DEBUG = '1'
+   *   disable: untick it, or delete localStorage.CODELINK_DEBUG
+   *
+   * The localStorage flag stays because it is the only channel that works from a
+   * page console, i.e. while debugging this file itself.
    */
   function dbg() {
-    try {
-      if (localStorage.getItem('CODELINK_DEBUG') !== '1') return;
-    } catch (e) {
-      return;
+    var on = settings.debug;
+    if (!on) {
+      try {
+        on = localStorage.getItem('CODELINK_DEBUG') === '1';
+      } catch (e) {
+        on = false;
+      }
     }
+    if (!on) return;
     var a = ['[codelink]'].concat([].slice.call(arguments));
     console.log.apply(console, a);
   }
   var reqSeq = 0; // guards against out-of-order async replies
   var rafPending = false;
 
-  var cache = new Map(); // url -> {v: {kind:'ok', data} | {kind:'skip'}, exp}
+  // url -> {v: {kind:'ok', data} | {kind:'missing', code, owner, repo, repoPath}
+  //             | {kind:'skip'}, exp}
+  var cache = new Map();
 
   /*
    * Bounded LRU. A single-page-app session is long-lived and triage over-triggers, so
@@ -794,6 +951,15 @@
   var pickerKind = 'existing';
   var pickerIndex = 0;
 
+  /*
+   * `entry` holds either a resolved payload or a 'missing' verdict, and only the
+   * first has a `data`. Everything that opens a file goes through here, so an
+   * inert 'missing' entry can never be mistaken for something clickable.
+   */
+  function okData() {
+    return entry && entry.kind === 'ok' ? entry.data : null;
+  }
+
   // ------------------------------------------------------ show / hide timing
 
   /*
@@ -836,6 +1002,7 @@
     uiMode = 'hidden';
     anchorEl = null;
     anchorUrl = '';
+    pointerX = null;
     entry = null;
     panel.classList.remove('is-open');
     picker.classList.remove('is-on');
@@ -904,35 +1071,52 @@
     var ph = panel.offsetHeight || BTN;
 
     /*
-     * Just past the link's right edge, vertically centred on its line box, then
-     * clamped into the viewport.
+     * ABOVE the link's line box, horizontally next to the pointer, then clamped
+     * into the viewport.
      *
-     * The vertical rule used to be a flat `r.top - GAP`, which silently assumed
-     * the button was about as tall as a line of text. Its error against true
-     * centring is (BTN - r.height) / 2 - GAP, so it was never actually right:
-     * even at the original 22px the circle sat 3px HIGH on a 20px line, and it
-     * drifts further with every px the two differ — which a code host guarantees,
-     * mixing headings, table rows and small print on one page. Centre explicitly
-     * instead; that holds at any button size and any line height.
+     * Vertically this is the whole point of the placement: the button used to be
+     * centred on the link's own line, which meant it covered whatever followed
+     * the link on that line — on a code host, usually more code. One BTN plus the
+     * same GAP above the line box moves it into the leading between lines
+     * instead, and nothing on the hovered line is ever hidden.
      *
-     * BTN rather than ph on purpose: with the picker open ph is the picker's
-     * height, and centring that on one line of text would drag it far off its
-     * link — the picker is meant to appear where the button was.
+     * Horizontally it follows the cursor rather than the link's right edge. An
+     * anchor on these sites is regularly a whole table cell or a wrapped path, so
+     * its right edge can be hundreds of px from where the hand actually is;
+     * pointerX is the clientX of the trusted mouseover that started this show.
+     * POINTER_DX keeps the button's left edge clear of the arrow's hotspot so it
+     * never paints under the cursor. With no pointerX (a reposition that
+     * predates any hover) fall back to the link's left edge.
      *
-     * Horizontally the button never covers the link itself, only whatever
-     * follows it on the line. At this size that is unavoidable, and it is why
-     * the overlay exists for the duration of a hover and not a moment longer.
+     * BTN rather than ph on purpose: with the picker open, ph is the PICKER's
+     * height, and subtracting that would fling it far above the link. The picker
+     * is meant to appear where the button was; the clamp is what keeps it on
+     * screen.
      */
-    var left = r.right + GAP;
-    var top = r.top + (r.height - BTN) / 2;
+    var px = typeof pointerX === 'number' ? pointerX : r.left;
+    var left = px + POINTER_DX;
+    var top = r.top - GAP - BTN;
+    // No room above — a link on the first line of the viewport. Mirror the same
+    // offset below, which is the only other place that does not cover the line.
+    var above = true;
+    if (top < GAP) {
+      top = r.bottom + GAP;
+      above = false;
+    }
     left = Math.max(GAP, Math.min(left, vw - pw - GAP));
     top = Math.max(GAP, Math.min(top, vh - ph - GAP));
 
     panel.style.transform = 'translate3d(' + Math.round(left) + 'px,' + Math.round(top) + 'px,0)';
 
-    // flip the tooltip when it would run off the edge
-    tip.classList.toggle('is-right', left + 280 > vw);
-    tip.classList.toggle('is-above', top + ph + 96 > vh);
+    /*
+     * Which side the tooltip takes. It defaults to hanging below the button, and
+     * that was harmless while the button sat beside the link — now the button is
+     * above the link, so "below the button" IS the link's own line. Flip it above
+     * whenever the button is above (unless it would not fit up there), and leave
+     * it below when the button had to flip below the link, for the same reason.
+     */
+    tip.classList.toggle('is-right', left + TIP_W > vw);
+    tip.classList.toggle('is-above', above ? top >= TIP_H : top + ph + TIP_H > vh);
   }
 
   function onViewportChange() {
@@ -1040,13 +1224,38 @@
   }
 
   function renderReady() {
+    var d = okData();
+    if (!d) return;
     uiMode = 'ready';
     btn.style.display = '';
     picker.classList.remove('is-on');
     hideTip();
-    var odd = entry.data.parsed.refIsDefault === false;
+    var odd = d.parsed.refIsDefault === false;
     btn.className = 'cl-btn' + (odd ? ' has-badge' : '');
     btn.setAttribute('aria-label', 'Open in Neovim');
+    showPanel();
+  }
+
+  /*
+   * The daemon understood the link but has nothing local behind it. Unlike the
+   * two-empty-lists verdict — which is the ordinary outcome for most links on the
+   * page and must paint nothing — this one names a repo, so it is worth telling
+   * the user about once: a dimmed, smaller, inert button with a red cross. It
+   * never opens anything; the click handler only re-shows the tooltip.
+   */
+  function renderMissing() {
+    if (!entry || entry.kind !== 'missing') return;
+    uiMode = 'missing';
+    btn.style.display = '';
+    picker.classList.remove('is-on');
+    hideTip();
+    btn.className = 'cl-btn is-missing';
+    btn.setAttribute(
+      'aria-label',
+      entry.code === 'FILE_NOT_LOCAL'
+        ? 'codelink: not in the local ' + entry.repo + ' checkout'
+        : 'codelink: ' + entry.repo + " isn't cloned locally"
+    );
     showPanel();
   }
 
@@ -1096,8 +1305,24 @@
       showTip("codelink daemon isn't running", KICKSTART, 'click the command to copy');
       return;
     }
-    if (uiMode !== 'ready' || !entry) return;
-    var d = entry.data;
+    if (uiMode === 'missing' && entry && entry.kind === 'missing') {
+      if (entry.code === 'FILE_NOT_LOCAL') {
+        showTip(
+          (entry.repoPath || 'that path') + " isn't in the local " + entry.repo + ' checkout',
+          null,
+          'pull, or switch to the right branch'
+        );
+      } else {
+        showTip(
+          "project '" + entry.repo + "' isn't cloned locally",
+          null,
+          'clone it, add a repoAliases entry, or add its folder to roots — see providers.schema.md'
+        );
+      }
+      return;
+    }
+    var d = okData();
+    if (uiMode !== 'ready' || !d) return;
     var warn = d.parsed.refIsDefault === false ? d.warnings[0] || 'not on the default branch' : null;
     var n = d.openInstances.length;
     var main =
@@ -1127,7 +1352,7 @@
     pickerRows = [];
     pickerItems = [];
     btn.style.display = '';
-    if (how === 'dismiss' || (how === 'restore' && !entry)) {
+    if (how === 'dismiss' || (how === 'restore' && !okData())) {
       hideNow();
       return;
     }
@@ -1141,9 +1366,9 @@
   }
 
   function openPicker(kind, note) {
-    dbg('openPicker:enter', kind, 'hasEntry=', Boolean(entry));
-    if (!entry) return;
-    var d = entry.data;
+    var d = okData();
+    dbg('openPicker:enter', kind, 'hasEntry=', Boolean(d));
+    if (!d) return;
     var items = kind === 'new' ? d.rootCandidates : d.openInstances;
     if (!items.length) {
       dbg('openPicker:abort — no items for kind', kind);
@@ -1269,7 +1494,8 @@
    * line jump, and a missing repoPath is rejected with BAD_REQUEST.
    */
   function buildOpenPayload(mode, item) {
-    var parsed = entry ? entry.data.parsed : {};
+    var d = okData();
+    var parsed = d ? d.parsed : {};
     return {
       mode: mode,
       target: itemTarget(item, mode),
@@ -1286,15 +1512,22 @@
     e.preventDefault();
     e.stopPropagation();
 
+    var d = okData();
     dbg('click', {
       type: e.type,
       shift: e.shiftKey,
       uiMode: uiMode,
-      hasEntry: Boolean(entry),
-      instances: entry ? entry.data.openInstances.length : -1,
-      roots: entry ? entry.data.rootCandidates.length : -1,
+      hasEntry: Boolean(d),
+      instances: d ? d.openInstances.length : -1,
+      roots: d ? d.rootCandidates.length : -1,
     });
 
+    // Inert by design: there is nothing local to open. Re-show the explanation
+    // for anyone who clicked it expecting something to happen.
+    if (uiMode === 'missing') {
+      hoverTipForState();
+      return;
+    }
     if (uiMode === 'down') {
       copyText(KICKSTART).then(function (ok) {
         showTip(
@@ -1309,13 +1542,11 @@
       // a retry is the only useful action here
       if (anchorEl && anchorUrl) {
         cache.delete(anchorUrl);
-        beginShow(anchorEl, anchorUrl);
+        beginShow(anchorEl, anchorUrl, pointerX);
       }
       return;
     }
-    if (uiMode !== 'ready' || !entry) return;
-
-    var d = entry.data;
+    if (uiMode !== 'ready' || !d) return;
 
     if (e.shiftKey) {
       if (d.rootCandidates.length) openPicker('new');
@@ -1390,7 +1621,15 @@
 
   // -------------------------------------------------------------- hover flow
 
-  function scheduleShow(a) {
+  /*
+   * `px` is the clientX of the mouseover that triggered this — captured here and
+   * carried all the way to reposition(), because by the time the button paints
+   * (HOVER_DELAY later, then a round trip to the daemon) the event is long gone
+   * and the content script has no other way to know where the cursor is. Only
+   * the FIRST mouseover on an anchor sets it, so the button lands where the
+   * pointer entered the link and then stays put instead of chasing the cursor.
+   */
+  function scheduleShow(a, px) {
     var url = a.href;
 
     if (a === anchorEl && uiMode !== 'hidden') {
@@ -1405,23 +1644,37 @@
       showTimer = 0;
       if (pendingAnchor !== a) return;
       pendingAnchor = null;
-      beginShow(a, url);
+      beginShow(a, url, px);
     }, HOVER_DELAY);
   }
 
-  function beginShow(a, url) {
+  function beginShow(a, url, px) {
     if (pinned) return;
+    // The mouseover gate covers the ordinary path; this covers a showTimer that
+    // was already armed when the pause landed.
+    if (settings.paused) return;
     cancelHide();
 
     var cached = cacheGet(url);
     if (cached && cached.kind === 'skip') return;
+    // A cached 'missing' verdict is re-gated on every hover rather than at the
+    // moment it was stored, so turning the badges off in the popup takes effect
+    // on links this tab has already seen — without a reload and without waiting
+    // out the TTL.
+    if (cached && cached.kind === 'missing' && !badgeVisible(url, cached.owner, cached.repo)) return;
 
     anchorEl = a;
     anchorUrl = url;
+    if (typeof px === 'number') pointerX = px;
 
     if (cached && cached.kind === 'ok') {
       entry = cached;
       renderReady();
+      return;
+    }
+    if (cached && cached.kind === 'missing') {
+      entry = cached;
+      renderMissing();
       return;
     }
 
@@ -1433,8 +1686,37 @@
       if (seq !== reqSeq || anchorEl !== a) return;
 
       if (reply.ok) {
-        var data = normalize(reply.data);
+        var raw = reply.data && typeof reply.data === 'object' ? reply.data : {};
+        var data = normalize(raw);
         if (!data.openInstances.length && !data.rootCandidates.length) {
+          /*
+           * The daemon names WHICH repo has nothing behind it only when the
+           * provider captured one; without a repo the verdict is the ordinary
+           * "not ours" and must stay silent. `code` lives on the raw payload —
+           * normalize() strips unknown fields on purpose. Cached even when the
+           * badge is toggled off: the verdict is the expensive part, and
+           * beginShow re-gates visibility on every hover, so flipping the popup
+           * switch takes effect without waiting out a re-resolve.
+           */
+          var code = raw.code;
+          var repo = typeof data.parsed.repo === 'string' ? data.parsed.repo : '';
+          if ((code === 'REPO_NOT_LOCAL' || code === 'FILE_NOT_LOCAL') && repo) {
+            var miss = {
+              kind: 'missing',
+              code: code,
+              owner: typeof data.parsed.owner === 'string' ? data.parsed.owner : '',
+              repo: repo,
+              repoPath: typeof data.parsed.repoPath === 'string' ? data.parsed.repoPath : '',
+            };
+            cachePut(url, miss, CACHE_TTL);
+            if (!badgeVisible(url, miss.owner, miss.repo)) {
+              hideNow();
+              return;
+            }
+            entry = miss;
+            renderMissing();
+            return;
+          }
           // "unsupported": no local checkout knows this path. Because triage
           // deliberately over-triggers, this is the *expected* outcome for most
           // links on the site — a grey button here would put a permanent dot on
@@ -1510,7 +1792,10 @@
    * still hit-testable via document.elementFromPoint at coordinates the page
    * chose — one bit per URL, "is this repo cloned here", which enumerates into
    * the list of private checkouts on the machine. A real cursor is the only
-   * legitimate trigger for talking to the daemon.
+   * legitimate trigger for talking to the daemon. The missing badge adds the
+   * complementary bit — "this repo is NOT cloned here" — behind the same
+   * real-cursor gate and the popup's badge switches; it observes the same
+   * boundary, it does not move it.
    *
    * The teardown listeners below (mouseout, pointerdown, blur) deliberately do
    * NOT check it: their only effect is to return the overlay to its resting
@@ -1523,9 +1808,10 @@
     'mouseover',
     function (e) {
       if (!e.isTrusted) return;
+      if (settings.paused) return;
       var a = e.target instanceof Element && e.target.closest('a[href]');
       if (!a || !triage(a.href)) return;
-      scheduleShow(a);
+      scheduleShow(a, e.clientX);
     },
     true
   );

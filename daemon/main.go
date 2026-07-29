@@ -389,6 +389,9 @@ func cmdDoctor() error {
 		fmt.Printf("    match patterns : %s\n", strings.Join(p.MatchPatterns(), ", "))
 		fmt.Printf("    refParam       : %s (default %q)\n", p.RefParam, p.DefaultRef)
 		fmt.Printf("    projectMarkers : %s\n", strings.Join(p.ProjectMarkers, ", "))
+		if p.RepoPage != "" {
+			fmt.Printf("    repoPage       : %s\n", p.RepoPage)
+		}
 		for i, m := range p.Match {
 			hash := m.Hash
 			if hash == "" {

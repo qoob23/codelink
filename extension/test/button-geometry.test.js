@@ -3,7 +3,8 @@
  *
  * The 33px circle is stated three times over: in content.css, in the copy of
  * content.css inlined into content.js, and — as a bare number — in content.js's
- * positioning maths, which centres the panel on the link's line box against it.
+ * positioning maths, which lifts the panel one button-height above the link's
+ * line box against it.
  * Let any of the three drift and the button either sits off its link or is
  * clamped by the wrong amount, with nothing to notice it. The tooltip's own
  * offset is derived from the same number for the same reason.
@@ -152,6 +153,14 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   is('.cl-badge', 'right', '-3px');
   is('.cl-badge', 'box-shadow', '0 0 0 2.25px var(--cl-surface)');
 
+  // The can't-resolve cross mirrors the ref badge in the opposite corner —
+  // same circle, same surface ring, or the two stop reading as a family.
+  is('.cl-xbadge', 'width', '10.5px');
+  is('.cl-xbadge', 'height', '10.5px');
+  is('.cl-xbadge', 'bottom', '-3px');
+  is('.cl-xbadge', 'right', '-3px');
+  is('.cl-xbadge', 'box-shadow', '0 0 0 2.25px var(--cl-surface)');
+
   // The checkmark svg is drawn in a 12x12 viewBox, so the box scale already
   // thickens the stroke; the number must NOT be scaled a second time.
   is('.cl-check', 'stroke-width', '2.2');
@@ -162,21 +171,35 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
   // --- placement, which is where content.js's own copy of the size shows up ---
   const lnk = window.document.getElementById('lnk');
-  user(lnk, new window.MouseEvent('mouseover', { bubbles: true }));
+  const POINTER_X = 140; // clientX of the hover that starts the show
+  const DX = 10; // POINTER_DX in content.js
+  user(lnk, new window.MouseEvent('mouseover', { bubbles: true, clientX: POINTER_X }));
   await sleep(400);
 
   const panel = shadow.getElementById('panel');
   check('panel is up', panel.classList.contains('is-open'), panel.className);
 
-  // Just past the link's right edge, and centred on its line box: an odd button
-  // on an even line puts the centre on a half pixel, which reposition() rounds —
-  // 6.5px above the link's top becomes 7. Mirror that rounding rather than
-  // picking a rect that hides it.
-  const want =
+  // Above the link's line box — one button plus one gap — and a little right of
+  // where the pointer entered, not of where the link happens to end.
+  let want =
     'translate3d(' +
-    Math.round(RECT.right + GAP) + 'px,' +
-    Math.round(RECT.top + (RECT.height - BTN) / 2) + 'px,0)';
-  check('panel sits right of the link, centred on its line box',
+    Math.round(POINTER_X + DX) + 'px,' +
+    Math.round(RECT.top - GAP - BTN) + 'px,0)';
+  check('panel sits above the line, right of the pointer',
+        panel.style.transform === want, 'got ' + panel.style.transform + ', want ' + want);
+
+  // A link on the first line of the viewport has no room above; the button
+  // mirrors below with the same offset, the only other spot off the line.
+  user(lnk, new window.MouseEvent('mouseout', { bubbles: true }));
+  await sleep(250);
+  RECT.top = 10; RECT.bottom = 30; RECT.y = 10;
+  user(lnk, new window.MouseEvent('mouseover', { bubbles: true, clientX: POINTER_X }));
+  await sleep(400);
+  want =
+    'translate3d(' +
+    Math.round(POINTER_X + DX) + 'px,' +
+    Math.round(RECT.bottom + GAP) + 'px,0)';
+  check('no room above: panel flips below the link',
         panel.style.transform === want, 'got ' + panel.style.transform + ', want ' + want);
 
   console.log(fails ? `\n${fails} FAILURE(S)` : '\nall checks passed');

@@ -1,0 +1,120 @@
+/* codelink — popup stylesheet. Same palette as content.css so the popup and
+ * the in-page overlay read as one thing; this file is NOT inlined anywhere,
+ * the popup loads it normally. */
+
+:root {
+  --cl-surface: #ffffff;
+  --cl-surface-hi: #f1f3f5;
+  --cl-border: rgba(0, 0, 0, 0.16);
+  --cl-text: #1f2328;
+  --cl-text-dim: #6b7280;
+  --cl-accent: #57a143;
+  --cl-warn: #b26b00;
+  --cl-miss: #d1443c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cl-surface: #1e2126;
+    --cl-surface-hi: #2a2e35;
+    --cl-border: rgba(255, 255, 255, 0.18);
+    --cl-text: #e8eaed;
+    --cl-text-dim: #9aa3ad;
+    --cl-accent: #7ec96a;
+    --cl-warn: #e0a458;
+    --cl-miss: #e5645c;
+  }
+}
+
+body {
+  width: 248px;
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--cl-surface);
+  color: var(--cl-text);
+  font: 500 12px/1.4 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+#daemon {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--cl-border);
+  font-weight: 600;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cl-text-dim);
+  flex: none;
+}
+
+.dot.up {
+  background: var(--cl-accent);
+}
+
+.dot.down {
+  background: var(--cl-warn);
+}
+
+#kickstart {
+  display: block;
+  margin: 8px 0 0;
+  padding: 5px 6px;
+  border-radius: 4px;
+  background: var(--cl-surface-hi);
+  color: var(--cl-text-dim);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  word-break: break-all;
+  cursor: copy;
+}
+
+#kickstart:hover {
+  color: var(--cl-text);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 0 0;
+  cursor: default;
+}
+
+.row > span {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.repo {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cl-text-dim);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+}
+
+input[type='checkbox'] {
+  accent-color: var(--cl-accent);
+  margin: 0;
+  flex: none;
+}
+
+select {
+  flex: none;
+  border: 1px solid var(--cl-border);
+  border-radius: 4px;
+  background: var(--cl-surface-hi);
+  color: var(--cl-text);
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 2px;
+}

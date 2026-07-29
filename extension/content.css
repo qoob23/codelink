@@ -45,6 +45,10 @@
   --cl-accent: #57a143;
   --cl-warn: #b26b00;
   --cl-warn-soft: rgba(178, 107, 0, 0.12);
+  /* the can't-resolve cross. Deliberately NOT --cl-warn: an amber button means
+   * "the daemon is down, do something about it", while this one means "there is
+   * nothing here for you" and must not read as the same class of problem. */
+  --cl-miss: #d1443c;
   --cl-shadow: 0 2px 10px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
   --cl-sel: rgba(87, 161, 67, 0.16);
 }
@@ -204,6 +208,61 @@
   display: block;
 }
 
+/* ---------- can't-resolve state ---------- */
+
+/* The daemon answered REPO_NOT_LOCAL / FILE_NOT_LOCAL: the link IS a file in a
+ * repo we understand, we just have no local copy of it. Shown instead of the
+ * usual silent skip so the user learns *why* nothing happens — but it must never
+ * compete with a live button, hence dimmed, smaller and inert. The desaturation
+ * is done through color rather than a filter: .cl-mark is fill:currentColor, so
+ * dimming the colour greys the Neovim mark for free, and a filter here would drag
+ * the red cross below down with it. */
+.cl-btn.is-missing {
+  color: var(--cl-text-dim);
+  background: var(--cl-surface-hi);
+  border-color: var(--cl-border);
+  box-shadow: none;
+  cursor: default;
+}
+
+.cl-btn.is-missing .cl-mark {
+  opacity: 0.45;
+}
+
+/* beats the #panel.is-open .cl-btn scale(1) rule on specificity */
+#panel.is-open .cl-btn.is-missing {
+  transform: scale(0.8);
+}
+
+.cl-btn.is-missing:hover {
+  background: var(--cl-surface-hi);
+}
+
+/* Mirrors .cl-badge — same 10.5px circle, same 2.25px surface ring — in the
+ * opposite corner, so the two can never be confused for one another. */
+.cl-xbadge {
+  display: none;
+  position: absolute;
+  bottom: -3px;
+  right: -3px;
+  box-sizing: border-box;
+  width: 10.5px;
+  height: 10.5px;
+  border-radius: 50%;
+  background: var(--cl-miss);
+  box-shadow: 0 0 0 2.25px var(--cl-surface);
+  color: #ffffff;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 10.5px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.cl-btn.is-missing .cl-xbadge {
+  display: block;
+}
+
 /* ---------- tooltip ---------- */
 
 .cl-tip {
@@ -238,6 +297,9 @@
   right: 0;
 }
 
+/* Flipped by content.js. The button normally sits ABOVE the hovered link, so
+ * this is the common case, not the edge case: a tooltip hanging below the button
+ * would land straight on the line of code the user is reading. */
 .cl-tip.is-above {
   top: auto;
   bottom: 37px;
@@ -398,6 +460,7 @@
     --cl-accent: #7ec96a;
     --cl-warn: #e0a458;
     --cl-warn-soft: rgba(224, 164, 88, 0.14);
+    --cl-miss: #e5645c;
     --cl-shadow: 0 2px 12px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(255, 255, 255, 0.05);
     --cl-sel: rgba(126, 201, 106, 0.18);
   }

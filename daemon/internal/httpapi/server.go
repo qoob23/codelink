@@ -58,6 +58,19 @@ const (
 	CodeSpawnTimeout   = "SPAWN_TIMEOUT"
 	CodeBadRequest     = "BAD_REQUEST"
 	CodeNoProvider     = "NO_PROVIDER"
+
+	// CodeRepoNotLocal and CodeFileNotLocal split the one outcome that used to be
+	// indistinguishable from the outside: empty lists. Both mean "nothing to
+	// open", but the remedy differs — clone the repository, versus pull/check out
+	// the branch that has this file — so the extension has to be able to tell
+	// them apart without parsing the human-readable warnings.
+	CodeRepoNotLocal = "REPO_NOT_LOCAL"
+	CodeFileNotLocal = "FILE_NOT_LOCAL"
+
+	// CodeNotARepoPage is /repostatus's "this URL names no repository", which is
+	// an ordinary answer for that endpoint rather than a failure: the extension
+	// asks about every page it lands on.
+	CodeNotARepoPage = "NOT_A_REPO_PAGE"
 )
 
 // Kinds of link target.
@@ -203,6 +216,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/resolve", s.handleResolve)
+	mux.HandleFunc("/repostatus", s.handleRepoStatus)
 	mux.HandleFunc("/open", s.handleOpen)
 	mux.HandleFunc("/instances", s.handleInstances)
 	mux.HandleFunc("/reload", s.handleReload)
@@ -401,7 +415,7 @@ func (s *Server) resolveURL(raw string) resolveResponse {
 		empty.Code = CodeNoProvider
 		return empty
 	}
-	prov := parsed.Owner()
+	prov := parsed.MatchedProvider()
 	parsed.Project, parsed.ProjectName = resolve.Project(parsed.RepoPath, prov.ProjectMarkers)
 
 	resp := empty
@@ -507,6 +521,17 @@ func (s *Server) resolveURL(raw string) resolveResponse {
 		resp.OpenInstances = []OpenInstance{}
 		resp.RootCandidates = []roots.Candidate{}
 		resp.Warnings = append(resp.Warnings, "no local checkout contains this path")
+		// The machine-readable twin of the warnings above, and only ever set on
+		// this branch: an outcome with something to open needs no code. A
+		// provider that captures no repo cannot distinguish the two cases — every
+		// root is eligible by definition — so it gets no code at all and its
+		// payload stays byte-identical to what it was before this field existed.
+		if parsed.Repo != "" {
+			resp.Code = CodeFileNotLocal
+			if len(allRoots) == 0 {
+				resp.Code = CodeRepoNotLocal
+			}
+		}
 	default:
 		fi, err := os.Stat(first)
 		switch {
@@ -527,6 +552,80 @@ func inProject(root, project, cwd string) bool {
 		return false
 	}
 	return resolve.Within(resolve.Canonical(filepath.Join(root, filepath.FromSlash(project))), resolve.Canonical(cwd))
+}
+
+// ------------------------------------------------------------ /repostatus
+
+// repoRoot is one eligible checkout, trimmed to what a repo-level answer can
+// honestly carry. roots.Root's own JSON form advertises a recency ranking, and
+// nothing here ranked anything.
+type repoRoot struct {
+	Root  string `json:"root"`
+	Label string `json:"label"`
+}
+
+// repoStatusResponse answers for a URL that DID name a repository.
+type repoStatusResponse struct {
+	OK       bool       `json:"ok"`
+	Code     string     `json:"code,omitempty"`
+	Provider string     `json:"provider"`
+	Owner    string     `json:"owner"`
+	Repo     string     `json:"repo"`
+	Local    bool       `json:"local"`
+	Roots    []repoRoot `json:"roots"`
+}
+
+// repoStatusMiss answers for one that did not. It is a separate type on
+// purpose: emitting owner/repo/local/roots as empty values would invite a
+// caller to read "this repo is not checked out" out of "this page is not a repo
+// page", which are not the same statement.
+type repoStatusMiss struct {
+	OK   bool   `json:"ok"`
+	Code string `json:"code"`
+}
+
+func (s *Server) handleRepoStatus(w http.ResponseWriter, r *http.Request) {
+	raw := r.URL.Query().Get("url")
+	if raw == "" {
+		writeJSON(w, http.StatusOK, repoStatusMiss{OK: false, Code: CodeBadRequest})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.repoStatus(raw))
+}
+
+// repoStatus reports whether the repository a PAGE url names is checked out
+// locally. It never probes for a file, because a repo page names none — the
+// question is only which checkouts could serve this repository at all.
+//
+// The eligibility test is the very same RepoScope /resolve filters with, so the
+// two endpoints cannot drift into disagreeing about what "local" means.
+func (s *Server) repoStatus(raw string) any {
+	cfg := s.Config()
+	prov, u, ok := cfg.ProviderForURL(raw)
+	if !ok {
+		return repoStatusMiss{OK: false, Code: CodeNoProvider}
+	}
+	info, ok := prov.ParseRepoPage(u)
+	if !ok {
+		return repoStatusMiss{OK: false, Code: CodeNotARepoPage}
+	}
+
+	eligible := s.roots.ScopeFor(prov, info.Repo).Filter(s.roots.Expand(prov))
+	out := repoStatusResponse{
+		OK:       true,
+		Provider: prov.ID,
+		Owner:    info.Owner,
+		Repo:     info.Repo,
+		Local:    len(eligible) > 0,
+		Roots:    make([]repoRoot, 0, len(eligible)),
+	}
+	for _, r := range eligible {
+		out.Roots = append(out.Roots, repoRoot{Root: r.Path, Label: r.Label})
+	}
+	if !out.Local {
+		out.Code = CodeRepoNotLocal
+	}
+	return out
 }
 
 // ------------------------------------------------------------------ /open

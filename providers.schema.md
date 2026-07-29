@@ -25,10 +25,11 @@ Paste this, change `~/src/*` to wherever you keep clones, and run
       "id": "github",
       "hosts": ["github.com"],
       "match": [
-        { "path": "^/[^/]+/(?P<repo>[^/]+)/(?:blob|blame)/[^/]+/(?P<repoPath>.+)$" },
-        { "path": "^/[^/]+/(?P<repo>[^/]+)/raw/[^/]+/(?P<repoPath>.+)$" }
+        { "path": "^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?:blob|blame)/[^/]+/(?P<repoPath>.+)$" },
+        { "path": "^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/raw/[^/]+/(?P<repoPath>.+)$" }
       ],
       "hash": "^L(?P<line>\\d+)(?:-L(?P<endLine>\\d+))?$",
+      "repoPage": "^/(?P<owner>[^/]+)/(?P<repo>[^/]+)(?:/|$)",
       "projectMarkers": ["src", "lib", "test", "cmd", "internal"],
       "roots": [{ "glob": "~/src/*" }]
     }
@@ -112,6 +113,7 @@ toggle.
 | `defaultRef` | string | The ref that means "current". Anything else sets `refIsDefault:false` and adds a warning that the local file may differ. |
 | `projectMarkers` | []string | Directory names that mark the start of source inside a package (`lib`, `src`, `test`, …). The *project* is the longest path prefix ending immediately before the first of these. |
 | `repoAliases` | object | Optional map of repo name → checkout path (`~` expanded), for clones whose directory name differs from the repo name in the URL. The target is eligible for that name even if no `roots` entry enumerates it, and it joins the `mode:"new"` allowlist like any root. Keys are compared case-insensitively. |
+| `repoPage` | string | Optional RE2 regex over the URL **path** of repo-level *pages* (a tree listing, a commit view — not file links). Groups `owner` and `repo` are recognised; `repo` is required for a match to count. Powers `GET /repostatus`, which the extension's toolbar badge uses to answer "is this page's repo checked out locally?" before any hover. Capture `owner` here **and** in `match` consistently — the extension keys per-repo settings on `host/owner/repo` from both, and a mismatch makes the popup's per-repo switch silently inert. RE2 has no lookahead, so a broad pattern like the GitHub example above also matches a host's reserved two-segment pages (`/orgs/x`, `/settings/y`); the only cost is a spurious ✕ on the toolbar there. |
 | `roots` | []object | Where local checkouts live — see below. |
 
 ## `match` entries
@@ -138,6 +140,7 @@ Recognised group names — everything else is ignored:
 | --- | --- |
 | `repoPath` | **Required.** Repo-relative path to the file. |
 | `repo` | Repo name from the URL. Filters roots and open instances to those whose basename matches it (case-insensitively) before probing — see `repoAliases` for clones named differently. Absent → no filtering. |
+| `owner` | The namespace segment (org / user). Echo-only: it never affects matching, but it is returned in `parsed` and by `/repostatus`, and the extension keys its per-repo settings on `host/owner/repo`. |
 | `line`, `endLine` | 1-based line range. Out-of-range values are clamped by Neovim, not here. |
 | `col` | Column, currently parsed but unused. |
 | `side` | `L`/`R` in a diff view. |

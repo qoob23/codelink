@@ -1,0 +1,47 @@
+<!doctype html>
+<!--
+  codelink — action popup. Settings live in chrome.storage.local under the
+  single "settings" key; the content script and the service worker both watch
+  storage.onChanged, so every control here takes effect without a reload.
+  All daemon traffic goes through background.js message passing — this page
+  never fetches.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header id="daemon">
+      <span id="daemon-dot" class="dot"></span>
+      <span id="daemon-text">checking…</span>
+    </header>
+    <code id="kickstart" hidden title="click to copy"></code>
+
+    <label class="row">
+      <span>Pause codelink</span>
+      <input type="checkbox" id="paused" />
+    </label>
+
+    <label class="row">
+      <span>Can&rsquo;t-resolve badges</span>
+      <input type="checkbox" id="warnBadges" />
+    </label>
+
+    <div class="row" id="repo-row" hidden>
+      <span id="repo-name" class="repo"></span>
+      <select id="repo-override">
+        <option value="default">default</option>
+        <option value="on">on</option>
+        <option value="off">off</option>
+      </select>
+    </div>
+
+    <label class="row">
+      <span>Debug logging</span>
+      <input type="checkbox" id="debug" />
+    </label>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

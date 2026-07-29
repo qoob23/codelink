@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -358,7 +359,9 @@ func TestSpawnWorkdirRejectsSymlinkEscape(t *testing.T) {
 // repoServer builds a server over two same-shaped checkouts plus one that the
 // roots glob cannot reach, and a provider that captures a repo group on /code/
 // but not on /src/ — so one config exercises both the filtered and the
-// historical unfiltered path.
+// historical unfiltered path. /o/ additionally captures an owner, and repoPage
+// recognises the repo-level pages /repostatus answers about; both are inert for
+// the /code/ and /src/ cases.
 //
 // aliasRel, when set, is registered as the repoAliases target for "widgets".
 func repoServer(t *testing.T, aliasRel string) (srv *Server, base string) {
@@ -384,7 +387,9 @@ func repoServer(t *testing.T, aliasRel string) (srv *Server, base string) {
       "providers":[{"id":"t","hosts":["*.example.com"],
         "match":[
           {"path":"^/code/(?P<repo>[^/]+)/(?P<repoPath>.+)$"},
-          {"path":"^/src/(?P<repoPath>.+)$"}],
+          {"path":"^/src/(?P<repoPath>.+)$"},
+          {"path":"^/o/(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?P<repoPath>.+)$"}],
+        "repoPage":"^/repo/(?P<owner>[^/]+)/(?P<repo>[^/]+)(?:/tree/.*)?/?$",
         "projectMarkers":["lib"],
         "roots":[{"glob":%q}]%s}]}`,
 		filepath.Join(base, "checkouts", "*"), aliases), bin)
@@ -558,6 +563,378 @@ func TestOpenNewAcceptsAliasTarget(t *testing.T) {
 	})
 	if resp.OK || resp.Code != CodeRootNotAllowed {
 		t.Errorf("alias parent: want ROOT_NOT_ALLOWED, got %+v", resp)
+	}
+}
+
+// TestResolveOutcomeCodes covers the machine-readable split of the one outcome
+// that used to be a single shrug: empty lists. "Clone this repository" and
+// "this checkout does not have that file" are different instructions, and the
+// extension cannot be asked to recover the difference by parsing prose.
+func TestResolveOutcomeCodes(t *testing.T) {
+	srv, base := repoServer(t, "elsewhere/neurons")
+	addInstance(t, srv, "synapses", filepath.Join(base, "checkouts", "synapses"))
+
+	tests := []struct {
+		name string
+		url  string
+		want string // "" means the response must carry no code at all
+	}{
+		{
+			name: "no checkout is named after the repo",
+			url:  "https://a.example.com/code/ghost/lib/x.go", want: CodeRepoNotLocal,
+		},
+		{
+			name: "the checkout is here, the file is not",
+			url:  "https://a.example.com/code/synapses/lib/missing.go", want: CodeFileNotLocal,
+		},
+		{
+			// The alias supplies an eligible root, so the repo IS local; only the
+			// file is missing. Deciding on the empty result rather than on the
+			// surviving roots would get this one backwards.
+			name: "an aliased checkout is local even when the file is not",
+			url:  "https://a.example.com/code/widgets/lib/missing.go", want: CodeFileNotLocal,
+		},
+		{
+			// Nothing was filtered, so there is no repo-level claim to make.
+			name: "a provider capturing no repo gets no code",
+			url:  "https://a.example.com/src/lib/missing.go", want: "",
+		},
+		{
+			name: "a resolve with something to open gets no code",
+			url:  "https://a.example.com/code/synapses/lib/x.go", want: "",
+		},
+		{
+			name: "an owner-capturing URL is judged on its repo like any other",
+			url:  "https://a.example.com/o/acme/ghost/lib/x.go", want: CodeRepoNotLocal,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := srv.resolveURL(tc.url)
+			if !resp.OK {
+				t.Fatalf("resolve(%q) not ok: %+v", tc.url, resp)
+			}
+			if resp.Code != tc.want {
+				t.Errorf("code = %q, want %q (warnings: %v)", resp.Code, tc.want, resp.Warnings)
+			}
+			// The warnings are the human half of the same answer and predate the
+			// code; neither may quietly replace the other.
+			if len(resp.OpenInstances) == 0 && len(resp.RootCandidates) == 0 &&
+				!slices.Contains(resp.Warnings, "no local checkout contains this path") {
+				t.Errorf("warnings = %v, want the generic one to survive alongside the code", resp.Warnings)
+			}
+		})
+	}
+}
+
+// TestResolvePayloadUnchangedWithoutRepo is the compatibility guard for both new
+// Parsed fields: a provider that captures neither repo nor owner must serialise
+// byte-for-byte as it did before they existed.
+func TestResolvePayloadUnchangedWithoutRepo(t *testing.T) {
+	srv, _ := repoServer(t, "")
+	for _, u := range []string{
+		"https://a.example.com/src/lib/x.go",
+		"https://a.example.com/src/lib/missing.go",
+	} {
+		raw, err := json.Marshal(srv.resolveURL(u))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{`"code"`, `"repo"`, `"owner"`} {
+			if strings.Contains(string(raw), key) {
+				t.Errorf("resolve(%q) payload carries %s with nothing to say: %s", u, key, raw)
+			}
+		}
+	}
+}
+
+// TestResolveEchoesOwner: the owner is carried through untouched and changes
+// nothing about which checkout answers — no checkout records the namespace it
+// was cloned from, so resolving on it would be a guess.
+func TestResolveEchoesOwner(t *testing.T) {
+	srv, base := repoServer(t, "")
+	addInstance(t, srv, "synapses", filepath.Join(base, "checkouts", "synapses"))
+
+	resp := srv.resolveURL("https://a.example.com/o/acme/synapses/lib/x.go")
+	if !resp.OK {
+		t.Fatalf("resolve not ok: %+v", resp)
+	}
+	if resp.Parsed.Owner != "acme" {
+		t.Errorf("owner = %q, want acme", resp.Parsed.Owner)
+	}
+	if resp.Parsed.Repo != "synapses" {
+		t.Errorf("repo = %q, want synapses", resp.Parsed.Repo)
+	}
+	if got := candidateRoots(resp); !slices.Equal(got, []string{"synapses"}) {
+		t.Errorf("rootCandidates = %v, want [synapses]", got)
+	}
+
+	// A different owner over the same repo name must resolve identically: the
+	// owner is echoed, never filtered on.
+	other := srv.resolveURL("https://a.example.com/o/other-org/synapses/lib/x.go")
+	if got := candidateRoots(other); !slices.Equal(got, candidateRoots(resp)) {
+		t.Errorf("owner changed the answer: %v vs %v", got, candidateRoots(resp))
+	}
+	if other.Parsed.Owner != "other-org" {
+		t.Errorf("owner = %q, want other-org", other.Parsed.Owner)
+	}
+}
+
+// authGet performs an authenticated GET through the full handler chain and
+// decodes the body as a bare map, so a test can assert on the keys that are
+// present as well as their values.
+func authGet(t *testing.T, srv *Server, target string) (int, map[string]any) {
+	t.Helper()
+	t.Setenv("CODELINK_QUIET", "1")
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.Host = fmt.Sprintf("127.0.0.1:%d", testPort)
+	req.Header.Set("X-Codelink-Client", "ext")
+	req.Header.Set("X-Codelink-Token", srv.token)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	var body map[string]any
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("GET %s: body is not JSON: %v (%s)", target, err, rec.Body.String())
+		}
+	}
+	return rec.Code, body
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// TestRepoStatus pins all four answer shapes. The keys are asserted exactly,
+// not just the values: the miss shapes must NOT carry local/roots, or a caller
+// would read "this page is not a repo page" as "this repo is not checked out".
+func TestRepoStatus(t *testing.T) {
+	srv, base := repoServer(t, "elsewhere/neurons")
+
+	tests := []struct {
+		name      string
+		url       string
+		wantKeys  []string
+		wantCode  string
+		wantLocal bool
+		wantOwner string
+		wantRepo  string
+		wantRoots []string
+	}{
+		{
+			name: "a checked-out repository", url: "https://a.example.com/repo/acme/synapses",
+			wantKeys:  []string{"local", "ok", "owner", "provider", "repo", "roots"},
+			wantLocal: true, wantOwner: "acme", wantRepo: "synapses",
+			wantRoots: []string{filepath.Join(base, "checkouts", "synapses")},
+		},
+		{
+			name: "a tree page deeper in the same repository", url: "https://a.example.com/repo/acme/synapses/tree/main/lib",
+			wantKeys:  []string{"local", "ok", "owner", "provider", "repo", "roots"},
+			wantLocal: true, wantOwner: "acme", wantRepo: "synapses",
+			wantRoots: []string{filepath.Join(base, "checkouts", "synapses")},
+		},
+		{
+			// No file was probed anywhere here — the repo page names none — so
+			// this is purely "which checkouts could serve this repository".
+			name: "a repository nothing local serves", url: "https://a.example.com/repo/acme/ghost",
+			wantKeys: []string{"code", "local", "ok", "owner", "provider", "repo", "roots"},
+			wantCode: CodeRepoNotLocal, wantLocal: false, wantOwner: "acme", wantRepo: "ghost",
+			wantRoots: []string{},
+		},
+		{
+			name: "a repository reached only through an alias", url: "https://a.example.com/repo/acme/widgets",
+			wantKeys:  []string{"local", "ok", "owner", "provider", "repo", "roots"},
+			wantLocal: true, wantOwner: "acme", wantRepo: "widgets",
+			wantRoots: []string{filepath.Join(base, "elsewhere", "neurons")},
+		},
+		{
+			name: "a file link is not a repo page", url: "https://a.example.com/code/synapses/lib/x.go",
+			wantKeys: []string{"code", "ok"}, wantCode: CodeNotARepoPage,
+		},
+		{
+			name: "a page on the host that matches no repoPage form", url: "https://a.example.com/settings",
+			wantKeys: []string{"code", "ok"}, wantCode: CodeNotARepoPage,
+		},
+		{
+			name: "a host no provider claims", url: "https://code.other-host.org/repo/acme/synapses",
+			wantKeys: []string{"code", "ok"}, wantCode: CodeNoProvider,
+		},
+		{
+			// url.Parse hands this a host, but the daemon never treats a scheme
+			// the browser would not navigate as a code host — same rule /resolve
+			// applies.
+			name: "a javascript: URL is not a code host", url: "javascript://a.example.com/repo/acme/synapses",
+			wantKeys: []string{"code", "ok"}, wantCode: CodeNoProvider,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			status, body := authGet(t, srv, "/repostatus?url="+url.QueryEscape(tc.url))
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want 200", status)
+			}
+			if got := keysOf(body); !slices.Equal(got, tc.wantKeys) {
+				t.Fatalf("keys = %v, want %v (body %v)", got, tc.wantKeys, body)
+			}
+			wantOK := tc.wantCode != CodeNotARepoPage && tc.wantCode != CodeNoProvider
+			if body["ok"] != wantOK {
+				t.Errorf("ok = %v, want %v", body["ok"], wantOK)
+			}
+			if tc.wantCode != "" && body["code"] != tc.wantCode {
+				t.Errorf("code = %v, want %q", body["code"], tc.wantCode)
+			}
+			if !wantOK {
+				return
+			}
+			if body["provider"] != "t" {
+				t.Errorf("provider = %v, want t", body["provider"])
+			}
+			if body["owner"] != tc.wantOwner {
+				t.Errorf("owner = %v, want %q", body["owner"], tc.wantOwner)
+			}
+			if body["repo"] != tc.wantRepo {
+				t.Errorf("repo = %v, want %q", body["repo"], tc.wantRepo)
+			}
+			if body["local"] != tc.wantLocal {
+				t.Errorf("local = %v, want %v", body["local"], tc.wantLocal)
+			}
+			var gotRoots []string
+			for _, r := range body["roots"].([]any) {
+				entry := r.(map[string]any)
+				if !slices.Equal(keysOf(entry), []string{"label", "root"}) {
+					t.Errorf("roots entry keys = %v, want [label root]", keysOf(entry))
+				}
+				gotRoots = append(gotRoots, entry["root"].(string))
+			}
+			slices.Sort(gotRoots)
+			if len(gotRoots) != len(tc.wantRoots) {
+				t.Fatalf("roots = %v, want %v", gotRoots, tc.wantRoots)
+			}
+			for i := range gotRoots {
+				if gotRoots[i] != tc.wantRoots[i] {
+					t.Errorf("roots[%d] = %q, want %q", i, gotRoots[i], tc.wantRoots[i])
+				}
+			}
+		})
+	}
+}
+
+// TestRepoStatusRejectsMissingURL: the endpoint answers about a page, so with no
+// page named there is nothing to answer — and that is a caller bug, not a "no
+// provider" verdict about some URL.
+func TestRepoStatusRejectsMissingURL(t *testing.T) {
+	srv, _ := repoServer(t, "")
+	status, body := authGet(t, srv, "/repostatus")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if body["ok"] != false || body["code"] != CodeBadRequest {
+		t.Errorf("body = %v, want ok=false code=%s", body, CodeBadRequest)
+	}
+}
+
+// TestRepoStatusRequiresAuth: the new endpoint reads the same providers config
+// and root layout as every other one, so it has to sit behind the same guard. It
+// is routed through the shared middleware precisely so this cannot be forgotten,
+// and this test is what proves the routing did not bypass it.
+func TestRepoStatusRequiresAuth(t *testing.T) {
+	srv, _ := repoServer(t, "")
+	t.Setenv("CODELINK_QUIET", "1")
+	h := srv.Handler()
+
+	tests := []struct {
+		name   string
+		client string
+		token  string
+		host   string
+		want   int
+	}{
+		{"fully authenticated", "ext", srv.token, fmt.Sprintf("127.0.0.1:%d", testPort), http.StatusOK},
+		{"no credentials at all", "", "", fmt.Sprintf("127.0.0.1:%d", testPort), http.StatusForbidden},
+		{"wrong token", "ext", "deadbeef", fmt.Sprintf("127.0.0.1:%d", testPort), http.StatusForbidden},
+		{"missing client header", "", srv.token, fmt.Sprintf("127.0.0.1:%d", testPort), http.StatusForbidden},
+		{"rebound attacker host", "ext", srv.token, fmt.Sprintf("evil.example:%d", testPort), http.StatusForbidden},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/repostatus?url=https://a.example.com/repo/acme/synapses", nil)
+			req.Host = tc.host
+			if tc.client != "" {
+				req.Header.Set("X-Codelink-Client", tc.client)
+			}
+			if tc.token != "" {
+				req.Header.Set("X-Codelink-Token", tc.token)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Errorf("status = %d, want %d", rec.Code, tc.want)
+			}
+		})
+	}
+}
+
+// TestRepoStatusCORSPinsTheExtensionOrigin: the CORS policy IS the anti-CSRF
+// mechanism, so a page on a provider host — which is exactly where the extension
+// runs its content script — must get no Access-Control headers from the new
+// endpoint either.
+func TestRepoStatusCORSPinsTheExtensionOrigin(t *testing.T) {
+	srv, _ := repoServer(t, "")
+	t.Setenv("CODELINK_QUIET", "1")
+	h := srv.Handler()
+
+	tests := []struct {
+		name       string
+		origin     string
+		wantAllow  string
+		wantStatus int
+	}{
+		{"the extension itself", "chrome-extension://testext", "chrome-extension://testext", http.StatusOK},
+		{"a page on a provider host", "https://a.example.com", "", http.StatusOK},
+		{"another extension", "chrome-extension://someoneelse", "", http.StatusOK},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/repostatus?url=https://a.example.com/repo/acme/synapses", nil)
+			req.Host = fmt.Sprintf("127.0.0.1:%d", testPort)
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("X-Codelink-Client", "ext")
+			req.Header.Set("X-Codelink-Token", srv.token)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantStatus)
+			}
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != tc.wantAllow {
+				t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, tc.wantAllow)
+			}
+		})
+	}
+}
+
+// TestHealthIsTheLivenessEndpoint pins the cheap "is the daemon up, and which
+// build" contract a popup or toolbar icon polls. There is deliberately no
+// separate /status: /health already answers exactly that, with ok/version/pid,
+// and a second endpoint saying the same thing is one more thing to keep in sync.
+func TestHealthIsTheLivenessEndpoint(t *testing.T) {
+	srv, _ := repoServer(t, "")
+	status, body := authGet(t, srv, "/health")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if body["ok"] != true {
+		t.Errorf("ok = %v, want true", body["ok"])
+	}
+	if body["version"] != "test" {
+		t.Errorf("version = %v, want the build the server was configured with", body["version"])
+	}
+	if pid, ok := body["pid"].(float64); !ok || int(pid) != os.Getpid() {
+		t.Errorf("pid = %v, want %d", body["pid"], os.Getpid())
 	}
 }
 

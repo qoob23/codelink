@@ -48,13 +48,22 @@ type Provider struct {
 	ProjectMarkers []string     `json:"projectMarkers"`
 	Roots          []RootSpec   `json:"roots"`
 
+	// RepoPage recognises a repo-level PAGE — a tree listing, a commit view, the
+	// repository landing page — as opposed to the file links "match" describes.
+	// Such a URL names a repository but no file, so it can only ever answer "is
+	// this repo checked out locally", which is what /repostatus reports. One RE2
+	// regex over the URL path; the "owner" and "repo" groups are read back, and
+	// without a "repo" there is nothing to answer about.
+	RepoPage string `json:"repoPage"`
+
 	// RepoAliases maps a repo name — as captured by the "repo" group — onto the
 	// local checkout serving it, for the checkouts whose directory is not named
 	// after the repository. Targets are enumerated from providers.json exactly
 	// like roots, so they carry the same standing.
 	RepoAliases map[string]string `json:"repoAliases"`
 
-	hashRe *regexp.Regexp
+	hashRe     *regexp.Regexp
+	repoPageRe *regexp.Regexp
 }
 
 // Config is the whole providers.json document.
@@ -79,6 +88,13 @@ type Config struct {
 // Parsed is what a URL decomposes into.
 type Parsed struct {
 	Provider string `json:"provider"`
+	// Owner is the namespace the repository lives in — an org, a user, a
+	// project — when the provider captures one. It is ECHOED ONLY: nothing in
+	// the daemon resolves against it, because a checkout on disk carries no
+	// record of the namespace it was cloned from. It exists so a consumer can
+	// key per-repository state on host+owner+repo without having to know any
+	// provider's URL layout. omitempty, for the same reason Repo is.
+	Owner string `json:"owner,omitempty"`
 	// Repo is the repository name, when the provider captures one. Absent means
 	// the URL says nothing about which checkout it belongs to — and omitempty
 	// keeps the payload of a provider that captures no repo group byte-identical
@@ -99,8 +115,10 @@ type Parsed struct {
 	provider *Provider
 }
 
-// Owner returns the provider that matched the URL.
-func (p *Parsed) Owner() *Provider { return p.provider }
+// MatchedProvider returns the provider that matched the URL. (Not "Owner": that
+// name now belongs to the URL's namespace field above, which is a different
+// thing entirely.)
+func (p *Parsed) MatchedProvider() *Provider { return p.provider }
 
 // Load reads and compiles a providers.json.
 func Load(path string) (*Config, error) {
@@ -138,6 +156,13 @@ func (c *Config) compile() error {
 				return fmt.Errorf("provider %s: hash: %w", p.ID, err)
 			}
 			p.hashRe = re
+		}
+		if p.RepoPage != "" {
+			re, err := regexp.Compile(p.RepoPage)
+			if err != nil {
+				return fmt.Errorf("provider %s: repoPage: %w", p.ID, err)
+			}
+			p.repoPageRe = re
 		}
 		for i := range p.Match {
 			m := &p.Match[i]
@@ -233,12 +258,16 @@ func (c *Config) ForHost(host string) *Provider {
 	return nil
 }
 
-// Parse decomposes a full URL. ok is false when no provider claims the host or
-// when no match entry accepts the path.
-func (c *Config) Parse(rawURL string) (*Parsed, bool) {
+// ProviderForURL returns the provider claiming rawURL's host, together with the
+// parsed URL. ok is false when the URL is unusable or no provider claims it.
+//
+// This is the host-level half of Parse, split out so a caller that asks a
+// different question of the same URL — /repostatus asks about the repository
+// rather than a file — applies exactly the same admission rules.
+func (c *Config) ProviderForURL(rawURL string) (*Provider, *url.URL, bool) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Host == "" {
-		return nil, false
+		return nil, nil, false
 	}
 	// url.Parse is happy to give "javascript://code.example.com/repo/x" a host,
 	// and so is "file://". Matching those on the host alone would let a link the
@@ -246,13 +275,55 @@ func (c *Config) Parse(rawURL string) (*Parsed, bool) {
 	// daemon does not delegate that judgement to the content script. Parse
 	// lower-cases the scheme, so a literal comparison is enough.
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return nil, false
+		return nil, nil, false
 	}
 	p := c.ForHost(u.Hostname())
 	if p == nil {
+		return nil, nil, false
+	}
+	return p, u, true
+}
+
+// Parse decomposes a full URL. ok is false when no provider claims the host or
+// when no match entry accepts the path.
+func (c *Config) Parse(rawURL string) (*Parsed, bool) {
+	p, u, ok := c.ProviderForURL(rawURL)
+	if !ok {
 		return nil, false
 	}
 	return p.parseURL(u)
+}
+
+// RepoPageInfo is what a repo-level page URL decomposes into. There is no file
+// here, so this is everything such a URL can say.
+type RepoPageInfo struct {
+	Owner string
+	Repo  string
+}
+
+// ParseRepoPage applies the provider's repoPage regex to the URL path. ok is
+// false when the provider declares no such regex, when it does not match, or
+// when it matched without capturing a repo — in each of those cases the URL is
+// not a repo page as far as this provider is concerned, and the three are not
+// worth telling apart to a caller that can only report "not a repo page".
+func (p *Provider) ParseRepoPage(u *url.URL) (RepoPageInfo, bool) {
+	if p.repoPageRe == nil || u == nil {
+		return RepoPageInfo{}, false
+	}
+	urlPath := u.Path
+	if urlPath == "" {
+		urlPath = "/"
+	}
+	m := p.repoPageRe.FindStringSubmatch(urlPath)
+	if m == nil {
+		return RepoPageInfo{}, false
+	}
+	repo, ok := group(p.repoPageRe, m, "repo")
+	if !ok || repo == "" {
+		return RepoPageInfo{}, false
+	}
+	owner, _ := group(p.repoPageRe, m, "owner")
+	return RepoPageInfo{Owner: owner, Repo: repo}, true
 }
 
 func (p *Provider) parseURL(u *url.URL) (*Parsed, bool) {
@@ -304,7 +375,8 @@ func (p *Provider) parseURL(u *url.URL) (*Parsed, bool) {
 			continue
 		}
 		// repo is optional: a provider that captures none keeps resolving against
-		// every configured root.
+		// every configured root. owner is optional AND inert — see Parsed.Owner.
+		out.Owner, _ = get("owner")
 		out.Repo, _ = get("repo")
 		out.Line = intGroup(get, "line")
 		out.EndLine = intGroup(get, "endLine")

@@ -3,7 +3,7 @@
   "private": true,
   "description": "Regression tests for the content script's overlay state machine.",
   "scripts": {
-    "test": "node detached-anchor.test.js && node stale-instances.test.js && node untrusted-events.test.js && node button-geometry.test.js"
+    "test": "node detached-anchor.test.js && node stale-instances.test.js && node untrusted-events.test.js && node button-geometry.test.js && node missing-badge.test.js"
   },
   "devDependencies": {
     "jsdom": "^27.0.0"

@@ -18,6 +18,7 @@ lookup and no line-number arithmetic — it forwards the hovered URL to the loca
 | `background.js` | MV3 service worker. The only place that calls `fetch`. Talks to the daemon, normalises every outcome into one reply shape. |
 | `content.js` | Hover triage, the floating button, the picker, all shadow-DOM UI. Contains the inlined copies of `content.css` and `nvim-mark.svg`. |
 | `content.css` | Editable source for the shadow-root stylesheet. Not referenced by the manifest — see *Rebuilding* below. |
+| `popup.html`, `popup.js`, `popup.css` | The action popup: daemon status, pause, can't-resolve badge switches (global and per-repo), debug. Writes the one `settings` object in `chrome.storage.local`; never fetches. |
 | `nvim-mark.svg` | The Neovim mark, recolored to `currentColor`. Source for the inlined SVG and for the PNG icons. |
 | `icons/16.png`, `icons/48.png`, `icons/128.png` | Toolbar / extensions-page icons. |
 | `LICENSES.md` | Attribution for the Neovim mark (Jason Long, CC BY 3.0) and the statement of modification. |
@@ -261,6 +262,30 @@ and re-opens the picker with the fresh list.
 - **The hand-over.** A single shared 120 ms timer keeps the button alive while
   the pointer travels from the link to it. Leaving *either* the link or the
   button starts it; entering *either* cancels it.
+- **Placement follows the pointer.** The button paints one button-height above
+  the hovered link's line box, its left edge 10 px right of where the cursor
+  entered the link — not at the link's right edge, which on a table-cell anchor
+  can be hundreds of px from the hand. No room above (first line of the
+  viewport) mirrors it below. The tooltip flips to the opposite side of the
+  button so it never covers the hovered line.
+- **The can't-resolve badge.** A resolve that names a repo but finds nothing
+  local (`REPO_NOT_LOCAL` / `FILE_NOT_LOCAL`) paints a dimmed, smaller, inert
+  button with a red cross instead of the usual silence; its tooltip says why
+  (clone / add a `repoAliases` entry / add the folder to roots, vs. pull or
+  switch branch). Gated by the popup: a global switch plus per-repo overrides
+  keyed `"<host>/<owner>/<repo>"`, with the override beating the global. A
+  verdict without a repo stays silent, as before.
+- **Settings.** One object under the `settings` key in `chrome.storage.local`:
+  `{ paused, warnBadges, warnOverrides, debug }`. The popup is the only writer;
+  the content script and the service worker mirror it through
+  `storage.onChanged`, so every toggle takes effect without a reload. `paused`
+  stops hover triage entirely; `debug` turns on the `[codelink]` console
+  channel (the `localStorage.CODELINK_DEBUG` flag still works too).
+- **The toolbar badge answers "will hovering work here?".** On tab switch and
+  navigation the service worker asks `/repostatus` about the page URL and
+  badges the icon per tab: ✓ the page's repo has a local checkout, ✕ it does
+  not, `!` the daemon is down, nothing on a page that names no repo. Verdicts
+  are cached ~15 s per URL so SPA navigation does not hammer the daemon.
 - **The picker is modal.** Once open it ignores hover-out; close it with Esc,
   Tab, a click outside, or by picking a row. ↑/↓ move, Enter opens, mouse hover
   moves the selection too.
@@ -283,10 +308,11 @@ and re-opens the picker with the fresh list.
 - **Button size lives in three places.** `.cl-btn` is 33px (1.5× the 22px it
   started at); everything drawn inside the circle is that same 1.5 applied to
   *its own* original rather than to an intermediate value, the tooltip's offset
-  is button + gap, and `content.js` repeats the number as `var BTN` to clamp the
-  panel into the viewport and centre it on the hovered link's line box. Change
-  one, change all three — `test/button-geometry.test.js` fails if they drift, and
-  also fails if `content.css` was edited without re-running the inliner.
+  is button + gap, and `content.js` repeats the number as `var BTN` to lift the
+  panel one button-height above the hovered link's line box and clamp it into
+  the viewport. Change one, change all three — `test/button-geometry.test.js`
+  fails if they drift, and also fails if `content.css` was edited without
+  re-running the inliner.
 
 ## Troubleshooting
 
@@ -294,8 +320,10 @@ and re-opens the picker with the fresh list.
 | --- | --- |
 | Extension will not load at all | `hosts.gen.js` or `manifest.json` missing — run `codelink build-manifest`. |
 | Every link shows the amber button | Daemon down, or the SW is holding a stale/absent token. Start the daemon, then Reload the extension card. |
-| No button ever appears | Host not in `CODELINK_HOSTS`, or the path has fewer than 3 segments, or the daemon answered `NO_PROVIDER` (not a repo link), or it returned two empty lists (nothing local matches). All four are silent by design. |
+| No button ever appears | Codelink is paused (check the popup), the host is not in `CODELINK_HOSTS`, the path has fewer than 3 segments, the daemon answered `NO_PROVIDER` (not a repo link), or it returned two empty lists *without naming a repo* (nothing local matches). All silent by design — but when the daemon does name a repo, you get the dimmed button with the red cross instead of silence, unless the popup turned it off. |
 | Button appears but the picker is empty | `openInstances` and `rootCandidates` disagreeing with the click path — check the daemon's `/resolve` output directly with `curl`. |
 
-Click the toolbar icon at any time for a health check: the badge shows a green
-`ok` if the daemon answered, an amber `!` if it did not.
+Click the toolbar icon to open the popup: daemon status (with the kickstart
+command ready to copy when it is down), a pause switch, the can't-resolve badge
+switches, and debug logging. The icon itself is badged per tab — ✓ this page's
+repo is checked out locally, ✕ it is not, `!` the daemon is not running.
