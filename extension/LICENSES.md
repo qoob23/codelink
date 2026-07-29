@@ -26,5 +26,5 @@ extension talks to.
 ## codelink itself
 
 The extension source in this directory (`background.js`, `content.js`,
-`content.css`, `manifest.template.json`) carries whatever license the enclosing
-repository carries; it is not derived from any third-party code.
+`content.css`, `manifest.template.json`) is MIT licensed, like the rest of the
+repository — see `../LICENSE`. It is not derived from any third-party code.

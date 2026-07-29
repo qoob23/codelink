@@ -10,6 +10,56 @@ checkouts live locally. It is deliberately **outside** this versioned config, at
 Everything tracked in this repo is host-agnostic. Adding a new site means
 editing this file and running `codelink build-manifest` — no code changes.
 
+## Start here: GitHub
+
+Paste this, change `~/src/*` to wherever you keep clones, and run
+`codelink build-manifest`. It handles `blob`, `blame` and `raw` URLs and both
+`#L12` and `#L12-L20`.
+
+```json
+{
+  "version": 1,
+  "extensionId": "<the id bootstrap.sh printed>",
+  "providers": [
+    {
+      "id": "github",
+      "hosts": ["github.com"],
+      "match": [
+        { "path": "^/[^/]+/[^/]+/(?:blob|blame)/[^/]+/(?P<repoPath>.+)$" },
+        { "path": "^/[^/]+/[^/]+/raw/[^/]+/(?P<repoPath>.+)$" }
+      ],
+      "hash": "^L(?P<line>\\d+)(?:-L(?P<endLine>\\d+))?$",
+      "projectMarkers": ["src", "lib", "test", "cmd", "internal"],
+      "roots": [{ "glob": "~/src/*" }]
+    }
+  ]
+}
+```
+
+Two things about this shape are worth understanding before you adapt it.
+
+**`repoPath` is repo-*relative*, so the owner and repo segments are skipped, not
+captured.** `/qoob23/codelink/blob/main/daemon/main.go` yields
+`daemon/main.go` — a path that means something inside a checkout. There is no
+`repo` group, by design: the daemon finds the file by probing roots, not by
+trusting the URL's idea of which repo you cloned where.
+
+**A glob root therefore matches on the path alone.** With `~/src/*`, a link to
+`daemon/main.go` resolves to exactly one clone, but a link to `README.md`
+matches *every* clone that has one. That is not a failure — candidates are
+ranked by whether the root already has an open Neovim, then by recency, and
+shift-click shows them in a picker — but it is why a root glob over hundreds of
+unrelated clones gives worse suggestions than one over the dozen you actually
+work in.
+
+Verify any provider you write with:
+
+```sh
+codelink doctor 'https://github.com/owner/repo/blob/main/path/to/file.go#L12-L20'
+```
+
+which prints the parse, the expanded roots and the ranked candidates.
+
 ## Top level
 
 | Key | Type | Notes |

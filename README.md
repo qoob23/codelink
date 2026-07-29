@@ -26,23 +26,30 @@ your plugin manager can own the whole thing. With lazy.nvim:
 { 'qoob23/codelink', build = './install.sh' }
 ```
 
-While the repo is private, add `url = 'git@github.com:qoob23/codelink.git'` —
-lazy.nvim clones over HTTPS, which has no credentials to offer, and the failure
-(`could not read Username for 'https://github.com'`) does not mention auth.
-
 `build` compiles the daemon, signs it, generates the extension manifest and
 loads the LaunchAgent. On a first install it also generates the extension
 keypair and starter configs, then prints two things you have to act on:
 
 1. **Edit `~/.local/share/codelink/providers.json`** — the starter file names
-   `example.com`. Nothing resolves until it names your hosts and checkout roots.
-   See `providers.schema.md`.
+   `example.com`, so nothing resolves until it names your hosts and checkout
+   roots. `providers.schema.md` documents every field and opens with a
+   ready-to-paste **GitHub** provider.
 2. **Load the extension unpacked**, from the path `install.sh` prints (your
    plugin manager's clone, e.g. `~/.local/share/nvim/lazy/codelink/extension`).
    Check the id on the card matches the one printed — if it doesn't, the
    manifest lost its `key` and every request will 403.
 
-Requires Go, Neovim 0.11+, and macOS for the Ghostty/launchd half.
+### Requirements
+
+| | |
+| --- | --- |
+| **macOS** | The daemon runs under launchd and drives Ghostty over AppleScript. Nothing else is portable today. |
+| **Go 1.22+** | To build the daemon. Stdlib only — no module downloads. |
+| **Neovim 0.11+** | The plugin uses `vim.uv` and `vim.hl.range`. |
+| **A Chromium browser** | Any build that can load an unpacked extension. |
+
+Ghostty is only needed for shift-click (open in a *new* editor). Clicking into
+an already-running Neovim works without it.
 
 Re-run the build step (`:Lazy build codelink`) after changing `providers.json`,
 and reload the extension card when `content.js`, `background.js` or the manifest
@@ -204,6 +211,23 @@ local `curl` can send any header it likes, and the token only raises that to
 The control that still has teeth is the **root allowlist**: `mode:"new"` targets
 must be one of the roots enumerated from `providers.json`, compared after
 `filepath.EvalSymlinks`, and every resolved path must sit inside an allowed root
-after cleaning. This matters concretely because the nvim config sets
+after cleaning. This matters concretely if your nvim config sets
 `opt.exrc = true` — launching nvim in an arbitrary directory that happens to
-contain a `.nvim.lua` would be remote code execution.
+contain a `.nvim.lua` would then be remote code execution.
+
+## Credits
+
+- The **Neovim mark** used for the button and the extension icons is by
+  [Jason Long](https://github.com/neovim/neovim.github.io), CC BY 3.0, modified.
+  Full attribution and a statement of the modifications:
+  [`extension/LICENSES.md`](extension/LICENSES.md).
+- The daemon is **stdlib-only Go** and the extension has **no runtime
+  dependencies**. The only third-party package anywhere is
+  [jsdom](https://github.com/jsdom/jsdom) (MIT), a devDependency of the
+  extension's test suite.
+- Built with [Claude Code](https://claude.com/claude-code) — see
+  `WORKJOURNAL.md` for how, including what that got wrong.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
