@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.qoob23.codelink</string>
+
+    <!-- launchd does not expand ~ or $HOME in plists: every path here is literal. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/svetozar/.local/bin/codelink</string>
+        <string>serve</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- A launchd agent inherits PATH=/usr/bin:/bin:/usr/sbin:/sbin, which has
+             neither nvim nor ghostty. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>CODELINK_PORT</key>
+        <string>47391</string>
+        <key>CODELINK_NVIM</key>
+        <string>/opt/homebrew/bin/nvim</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Dict rather than <true/>: a clean exit stays down (so `codelink` can be
+         stopped deliberately), a crash is restarted. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <!-- Keeps the daemon out of the low-priority background band, so a hover
+         that hits a cold FUSE stat is not additionally throttled. -->
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>StandardOutPath</key>
+    <string>/Users/svetozar/.local/state/codelink/daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/svetozar/.local/state/codelink/daemon.err.log</string>
+</dict>
+</plist>

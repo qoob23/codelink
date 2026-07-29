@@ -1,0 +1,393 @@
+/* codelink — shadow-root stylesheet.
+ *
+ * This file is the EDITABLE SOURCE. It is never referenced from manifest.json:
+ * it is inlined verbatim into content.js between the codelink:inline:css
+ * markers and injected as a <style> element into the closed shadow root.
+ * After editing, re-run the inliner (see README.md) or content.js keeps the
+ * stale copy.
+ *
+ * Page CSS cannot reach into the shadow root, but *inherited* properties
+ * (font, color, line-height, ...) do cross the shadow boundary through the
+ * host, so #panel resets every inheritable property it cares about.
+ */
+
+:host {
+  all: initial;
+}
+
+#panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: none;
+  box-sizing: border-box;
+
+  /* hard reset of everything the page could have handed us by inheritance */
+  margin: 0;
+  padding: 0;
+  font: 500 12px/1.35 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-transform: none;
+  text-indent: 0;
+  text-align: left;
+  text-shadow: none;
+  direction: ltr;
+  white-space: normal;
+  -webkit-font-smoothing: antialiased;
+
+  color: #1f2328;
+  --cl-surface: #ffffff;
+  --cl-surface-hi: #f1f3f5;
+  --cl-border: rgba(0, 0, 0, 0.16);
+  --cl-text: #1f2328;
+  --cl-text-dim: #6b7280;
+  --cl-accent: #57a143;
+  --cl-warn: #b26b00;
+  --cl-warn-soft: rgba(178, 107, 0, 0.12);
+  --cl-shadow: 0 2px 10px rgba(0, 0, 0, 0.18), 0 0 0 0.5px rgba(0, 0, 0, 0.06);
+  --cl-sel: rgba(87, 161, 67, 0.16);
+}
+
+#panel.is-open {
+  display: block;
+}
+
+/* ---------- the round button ---------- */
+
+.cl-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid var(--cl-border);
+  border-radius: 50%;
+  background: var(--cl-surface);
+  color: var(--cl-accent);
+  box-shadow: var(--cl-shadow);
+  cursor: pointer;
+  pointer-events: auto;
+  font: inherit;
+  -webkit-appearance: none;
+  appearance: none;
+  opacity: 0;
+  transform: scale(0.86);
+  transition: opacity 90ms ease-out, transform 90ms ease-out, color 90ms linear, border-color 90ms linear;
+}
+
+#panel.is-open .cl-btn {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.cl-btn:hover {
+  background: var(--cl-surface-hi);
+}
+
+.cl-btn:focus-visible {
+  outline: 2px solid var(--cl-accent);
+  outline-offset: 1px;
+}
+
+.cl-btn .cl-mark {
+  display: block;
+  width: 10px;
+  height: 12px;
+  color: inherit;
+  fill: currentColor;
+  pointer-events: none;
+}
+
+/* loading: the mark fades back, a thin ring spins */
+.cl-btn.is-loading {
+  color: var(--cl-text-dim);
+}
+
+.cl-btn.is-loading .cl-mark {
+  opacity: 0.25;
+}
+
+.cl-spin {
+  display: none;
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  border: 1.5px solid transparent;
+  border-top-color: var(--cl-accent);
+  animation: cl-rot 620ms linear infinite;
+  pointer-events: none;
+}
+
+.cl-btn.is-loading .cl-spin {
+  display: block;
+}
+
+@keyframes cl-rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* daemon not reachable */
+.cl-btn.is-down {
+  color: var(--cl-warn);
+  border-color: var(--cl-warn);
+  background: var(--cl-warn-soft);
+}
+
+/* success checkmark */
+.cl-btn.is-ok {
+  color: var(--cl-accent);
+  border-color: var(--cl-accent);
+}
+
+.cl-btn.is-ok .cl-mark,
+.cl-btn.is-ok .cl-spin {
+  display: none;
+}
+
+.cl-check {
+  display: none;
+  width: 11px;
+  height: 11px;
+  stroke: currentColor;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  pointer-events: none;
+}
+
+.cl-btn.is-ok .cl-check {
+  display: block;
+}
+
+/* non-default ref badge */
+.cl-badge {
+  display: none;
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--cl-warn);
+  box-shadow: 0 0 0 1.5px var(--cl-surface);
+  pointer-events: none;
+}
+
+.cl-btn.has-badge .cl-badge {
+  display: block;
+}
+
+/* ---------- tooltip ---------- */
+
+.cl-tip {
+  display: none;
+  position: absolute;
+  top: 26px;
+  left: 0;
+  box-sizing: border-box;
+  max-width: 272px;
+  width: max-content;
+  padding: 6px 8px;
+  border: 1px solid var(--cl-border);
+  border-radius: 6px;
+  background: var(--cl-surface);
+  color: var(--cl-text);
+  box-shadow: var(--cl-shadow);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.cl-tip.is-on {
+  display: block;
+}
+
+.cl-tip.is-right {
+  left: auto;
+  right: 0;
+}
+
+.cl-tip.is-above {
+  top: auto;
+  bottom: 26px;
+}
+
+.cl-tip-cmd {
+  display: block;
+  margin-top: 5px;
+  padding: 4px 5px;
+  border-radius: 4px;
+  background: var(--cl-surface-hi);
+  color: var(--cl-text-dim);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 10px;
+  line-height: 1.35;
+  word-break: break-all;
+  cursor: copy;
+  pointer-events: auto;
+}
+
+.cl-tip-cmd:hover {
+  color: var(--cl-text);
+}
+
+.cl-tip-hint {
+  display: block;
+  margin-top: 4px;
+  color: var(--cl-text-dim);
+  font-size: 10px;
+}
+
+/* ---------- picker ---------- */
+
+.cl-picker {
+  display: none;
+  box-sizing: border-box;
+  min-width: 216px;
+  max-width: 380px;
+  padding: 4px;
+  border: 1px solid var(--cl-border);
+  border-radius: 8px;
+  background: var(--cl-surface);
+  color: var(--cl-text);
+  box-shadow: var(--cl-shadow);
+  pointer-events: auto;
+  outline: none;
+}
+
+.cl-picker.is-on {
+  display: block;
+}
+
+.cl-picker-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px 5px;
+  color: var(--cl-text-dim);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.cl-picker-head .cl-mark {
+  width: 8px;
+  height: 10px;
+  color: var(--cl-accent);
+  fill: currentColor;
+  flex: none;
+}
+
+.cl-picker-list {
+  max-height: 244px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.cl-row {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cl-row.is-sel {
+  background: var(--cl-sel);
+}
+
+.cl-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.cl-row-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cl-text);
+}
+
+.cl-row-tag {
+  flex: none;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--cl-sel);
+  color: var(--cl-accent);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.cl-row-sub {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--cl-text-dim);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.cl-picker-foot {
+  padding: 4px 6px 2px;
+  color: var(--cl-text-dim);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.cl-picker-foot.is-warn {
+  color: var(--cl-warn);
+}
+
+/* ---------- dark theme ---------- */
+
+@media (prefers-color-scheme: dark) {
+  #panel {
+    color: #e8eaed;
+    --cl-surface: #1e2126;
+    --cl-surface-hi: #2a2e35;
+    --cl-border: rgba(255, 255, 255, 0.18);
+    --cl-text: #e8eaed;
+    --cl-text-dim: #9aa3ad;
+    --cl-accent: #7ec96a;
+    --cl-warn: #e0a458;
+    --cl-warn-soft: rgba(224, 164, 88, 0.14);
+    --cl-shadow: 0 2px 12px rgba(0, 0, 0, 0.55), 0 0 0 0.5px rgba(255, 255, 255, 0.05);
+    --cl-sel: rgba(126, 201, 106, 0.18);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cl-btn {
+    transition: none;
+  }
+
+  .cl-spin {
+    animation-duration: 2s;
+  }
+}

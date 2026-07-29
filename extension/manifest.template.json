@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "codelink",
+  "version": "1.0.0",
+  "description": "Open a code-hosting link in your local Neovim",
+  "key": "__EXTENSION_KEY__",
+  "host_permissions": ["http://127.0.0.1:47391/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["__MATCHES__"],
+      "js": ["hosts.gen.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "codelink",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  }
+}
