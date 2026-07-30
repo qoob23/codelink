@@ -48,22 +48,13 @@ type Provider struct {
 	ProjectMarkers []string     `json:"projectMarkers"`
 	Roots          []RootSpec   `json:"roots"`
 
-	// RepoPage recognises a repo-level PAGE — a tree listing, a commit view, the
-	// repository landing page — as opposed to the file links "match" describes.
-	// Such a URL names a repository but no file, so it can only ever answer "is
-	// this repo checked out locally", which is what /repostatus reports. One RE2
-	// regex over the URL path; the "owner" and "repo" groups are read back, and
-	// without a "repo" there is nothing to answer about.
-	RepoPage string `json:"repoPage"`
-
 	// RepoAliases maps a repo name — as captured by the "repo" group — onto the
 	// local checkout serving it, for the checkouts whose directory is not named
 	// after the repository. Targets are enumerated from providers.json exactly
 	// like roots, so they carry the same standing.
 	RepoAliases map[string]string `json:"repoAliases"`
 
-	hashRe     *regexp.Regexp
-	repoPageRe *regexp.Regexp
+	hashRe *regexp.Regexp
 }
 
 // Config is the whole providers.json document.
@@ -156,13 +147,6 @@ func (c *Config) compile() error {
 				return fmt.Errorf("provider %s: hash: %w", p.ID, err)
 			}
 			p.hashRe = re
-		}
-		if p.RepoPage != "" {
-			re, err := regexp.Compile(p.RepoPage)
-			if err != nil {
-				return fmt.Errorf("provider %s: repoPage: %w", p.ID, err)
-			}
-			p.repoPageRe = re
 		}
 		for i := range p.Match {
 			m := &p.Match[i]
@@ -261,9 +245,8 @@ func (c *Config) ForHost(host string) *Provider {
 // ProviderForURL returns the provider claiming rawURL's host, together with the
 // parsed URL. ok is false when the URL is unusable or no provider claims it.
 //
-// This is the host-level half of Parse, split out so a caller that asks a
-// different question of the same URL — /repostatus asks about the repository
-// rather than a file — applies exactly the same admission rules.
+// This is the host-level half of Parse, split out so any caller asking a
+// different question of the same URL applies exactly the same admission rules.
 func (c *Config) ProviderForURL(rawURL string) (*Provider, *url.URL, bool) {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || u.Host == "" {
@@ -292,38 +275,6 @@ func (c *Config) Parse(rawURL string) (*Parsed, bool) {
 		return nil, false
 	}
 	return p.parseURL(u)
-}
-
-// RepoPageInfo is what a repo-level page URL decomposes into. There is no file
-// here, so this is everything such a URL can say.
-type RepoPageInfo struct {
-	Owner string
-	Repo  string
-}
-
-// ParseRepoPage applies the provider's repoPage regex to the URL path. ok is
-// false when the provider declares no such regex, when it does not match, or
-// when it matched without capturing a repo — in each of those cases the URL is
-// not a repo page as far as this provider is concerned, and the three are not
-// worth telling apart to a caller that can only report "not a repo page".
-func (p *Provider) ParseRepoPage(u *url.URL) (RepoPageInfo, bool) {
-	if p.repoPageRe == nil || u == nil {
-		return RepoPageInfo{}, false
-	}
-	urlPath := u.Path
-	if urlPath == "" {
-		urlPath = "/"
-	}
-	m := p.repoPageRe.FindStringSubmatch(urlPath)
-	if m == nil {
-		return RepoPageInfo{}, false
-	}
-	repo, ok := group(p.repoPageRe, m, "repo")
-	if !ok || repo == "" {
-		return RepoPageInfo{}, false
-	}
-	owner, _ := group(p.repoPageRe, m, "owner")
-	return RepoPageInfo{Owner: owner, Repo: repo}, true
 }
 
 func (p *Provider) parseURL(u *url.URL) (*Parsed, bool) {

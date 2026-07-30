@@ -380,8 +380,7 @@ const ownerConfigJSON = `{
       "match": [
         { "path": "^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/blob/[^/]+/(?P<repoPath>.+)$" },
         { "path": "^/anon/(?P<repo>[^/]+)/(?P<repoPath>.+)$" }
-      ],
-      "repoPage": "^/(?P<owner>[^/]+)/(?P<repo>[^/]+)(?:/tree/.*)?/?$"
+      ]
     }
   ]
 }`
@@ -457,120 +456,6 @@ func TestParsedOwnerIsOmittedWhenAbsent(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"owner":"acme"`) {
 		t.Errorf("payload does not echo the owner: %s", raw)
-	}
-}
-
-func TestParseRepoPage(t *testing.T) {
-	cfg, err := loadJSON(t, ownerConfigJSON)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	tests := []struct {
-		name      string
-		url       string
-		wantOK    bool
-		wantOwner string
-		wantRepo  string
-	}{
-		{
-			name: "repository landing page", url: "https://a.example.com/acme/synapses",
-			wantOK: true, wantOwner: "acme", wantRepo: "synapses",
-		},
-		{
-			name: "landing page with a trailing slash", url: "https://a.example.com/acme/synapses/",
-			wantOK: true, wantOwner: "acme", wantRepo: "synapses",
-		},
-		{
-			name: "tree listing deeper in the repository", url: "https://a.example.com/acme/synapses/tree/main/lib",
-			wantOK: true, wantOwner: "acme", wantRepo: "synapses",
-		},
-		{
-			name: "a path the regex does not accept", url: "https://a.example.com/acme",
-			wantOK: false,
-		},
-		{
-			name: "the site root is not a repo page", url: "https://a.example.com/",
-			wantOK: false,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			prov, u, ok := cfg.ProviderForURL(tc.url)
-			if !ok {
-				t.Fatalf("ProviderForURL(%q) found no provider", tc.url)
-			}
-			info, ok := prov.ParseRepoPage(u)
-			if ok != tc.wantOK {
-				t.Fatalf("ParseRepoPage(%q) ok=%v, want %v (got %+v)", tc.url, ok, tc.wantOK, info)
-			}
-			if !tc.wantOK {
-				return
-			}
-			if info.Owner != tc.wantOwner || info.Repo != tc.wantRepo {
-				t.Errorf("ParseRepoPage(%q) = %+v, want owner %q repo %q", tc.url, info, tc.wantOwner, tc.wantRepo)
-			}
-		})
-	}
-}
-
-// TestParseRepoPageWithoutConfig covers the provider that declares no repoPage
-// at all: every URL on its hosts is simply not a repo page, and nothing panics
-// on the nil regex.
-func TestParseRepoPageWithoutConfig(t *testing.T) {
-	cfg := loadTestConfig(t)
-	prov, u, ok := cfg.ProviderForURL("https://a.example.com/code/owner/repo")
-	if !ok {
-		t.Fatal("ProviderForURL found no provider")
-	}
-	if info, ok := prov.ParseRepoPage(u); ok {
-		t.Errorf("ParseRepoPage without a repoPage regex = %+v, want not ok", info)
-	}
-}
-
-// TestParseRepoPageRequiresRepoGroup: a regex that matches but captures no repo
-// answers nothing, so it must not be reported as a repo page.
-func TestParseRepoPageRequiresRepoGroup(t *testing.T) {
-	cfg, err := loadJSON(t, `{"version":1,"providers":[{"id":"x","hosts":["a.com"],
-	  "match":[{"path":"^/(?P<repoPath>.+)$"}],"repoPage":"^/(?P<owner>[^/]+)/?$"}]}`)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	prov, u, ok := cfg.ProviderForURL("https://a.com/acme")
-	if !ok {
-		t.Fatal("ProviderForURL found no provider")
-	}
-	if info, ok := prov.ParseRepoPage(u); ok {
-		t.Errorf("ParseRepoPage = %+v, want not ok: there is no repo to report on", info)
-	}
-}
-
-func TestLoadValidatesRepoPage(t *testing.T) {
-	tests := []struct {
-		name     string
-		repoPage string
-		wantErr  bool
-	}{
-		{name: "well-formed regex", repoPage: `^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/?$`},
-		{name: "absent", repoPage: ``},
-		{name: "uncompilable regex", repoPage: `^/(?P<repo>[`, wantErr: true},
-		{name: "backreference, which RE2 has no such thing as", repoPage: `^/(?P<repo>x)\1$`, wantErr: true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			body := fmt.Sprintf(`{"version":1,"providers":[{"id":"x","hosts":["a.com"],
-			  "match":[{"path":"^/(?P<repoPath>.+)$"}],"repoPage":%q}]}`, tc.repoPage)
-			_, err := loadJSON(t, body)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("Load error = %v, wantErr %v", err, tc.wantErr)
-			}
-			// Load errors are how a broken providers.json gets diagnosed, so the
-			// message has to say which provider and which field, like every other
-			// compile failure does.
-			if tc.wantErr && !strings.Contains(err.Error(), "provider x: repoPage:") {
-				t.Errorf("error = %v, want it to name the provider and the field", err)
-			}
-		})
 	}
 }
 

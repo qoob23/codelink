@@ -179,17 +179,18 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const panel = shadow.getElementById('panel');
   check('panel is up', panel.classList.contains('is-open'), panel.className);
 
-  // Above the link's line box — one button plus one gap — and a little right of
-  // where the pointer entered, not of where the link happens to end.
+  // Above the link's line box, flush against it — no vertical gap, every px of
+  // air is pointer travel — and a little right of where the pointer entered,
+  // not of where the link happens to end.
   let want =
     'translate3d(' +
     Math.round(POINTER_X + DX) + 'px,' +
-    Math.round(RECT.top - GAP - BTN) + 'px,0)';
-  check('panel sits above the line, right of the pointer',
+    Math.round(RECT.top - BTN) + 'px,0)';
+  check('panel sits flush above the line, right of the pointer',
         panel.style.transform === want, 'got ' + panel.style.transform + ', want ' + want);
 
   // A link on the first line of the viewport has no room above; the button
-  // mirrors below with the same offset, the only other spot off the line.
+  // mirrors below, equally flush, the only other spot off the line.
   user(lnk, new window.MouseEvent('mouseout', { bubbles: true }));
   await sleep(250);
   RECT.top = 10; RECT.bottom = 30; RECT.y = 10;
@@ -198,7 +199,7 @@ const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   want =
     'translate3d(' +
     Math.round(POINTER_X + DX) + 'px,' +
-    Math.round(RECT.bottom + GAP) + 'px,0)';
+    Math.round(RECT.bottom) + 'px,0)';
   check('no room above: panel flips below the link',
         panel.style.transform === want, 'got ' + panel.style.transform + ', want ' + want);
 

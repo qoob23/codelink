@@ -253,18 +253,24 @@ and re-opens the picker with the fresh list.
   daemon owns the URL grammar (its regexes are RE2, not JS) and decides
   file-vs-directory by stat-ing the path, so the extension over-triggers and
   lets `/resolve` say no.
-- **Hover.** ~150 ms debounce before asking the daemon; results are cached per
-  URL, so re-hovering is instant. The cache **expires after 10 s**, because a
-  resolve is mostly a snapshot of mutable machine state — which Neovim instances
-  are running, which checkouts are mounted. Held for the session, an editor
-  started after the first hover would never be offered. Only a verdict on the
-  URL's *shape* (`NO_PROVIDER`, 4xx) is cached permanently.
+- **Hover paints first, resolves later.** The button appears the instant a
+  triaged link is hovered — a cached verdict in its final state, an unknown
+  link as the loading circle — and the daemon is asked only after the pointer
+  has dwelt ~150 ms on the link. Scanning quickly down a list of links moves
+  the button instantly from link to link and asks nothing for the ones passed
+  through. Verdicts are cached per URL; the cache **expires after 10 s**,
+  because a resolve is mostly a snapshot of mutable machine state — which
+  Neovim instances are running, which checkouts are mounted. Held for the
+  session, an editor started after the first hover would never be offered.
+  Only a verdict on the URL's *shape* (`NO_PROVIDER`, 4xx) is cached
+  permanently.
 - **The hand-over.** A single shared 120 ms timer keeps the button alive while
   the pointer travels from the link to it. Leaving *either* the link or the
   button starts it; entering *either* cancels it.
-- **Placement follows the pointer.** The button paints one button-height above
-  the hovered link's line box, its left edge 10 px right of where the cursor
-  entered the link — not at the link's right edge, which on a table-cell anchor
+- **Placement follows the pointer.** The button paints directly above the
+  hovered link's line box, flush against it — no vertical gap, every px of air
+  is pointer travel — with its left edge 10 px right of where the cursor
+  entered the link, not at the link's right edge, which on a table-cell anchor
   can be hundreds of px from the hand. No room above (first line of the
   viewport) mirrors it below. The tooltip flips to the opposite side of the
   button so it never covers the hovered line.
@@ -281,11 +287,6 @@ and re-opens the picker with the fresh list.
   `storage.onChanged`, so every toggle takes effect without a reload. `paused`
   stops hover triage entirely; `debug` turns on the `[codelink]` console
   channel (the `localStorage.CODELINK_DEBUG` flag still works too).
-- **The toolbar badge answers "will hovering work here?".** On tab switch and
-  navigation the service worker asks `/repostatus` about the page URL and
-  badges the icon per tab: ✓ the page's repo has a local checkout, ✕ it does
-  not, `!` the daemon is down, nothing on a page that names no repo. Verdicts
-  are cached ~15 s per URL so SPA navigation does not hammer the daemon.
 - **The picker is modal.** Once open it ignores hover-out; close it with Esc,
   Tab, a click outside, or by picking a row. ↑/↓ move, Enter opens, mouse hover
   moves the selection too.
@@ -309,8 +310,8 @@ and re-opens the picker with the fresh list.
   started at); everything drawn inside the circle is that same 1.5 applied to
   *its own* original rather than to an intermediate value, the tooltip's offset
   is button + gap, and `content.js` repeats the number as `var BTN` to lift the
-  panel one button-height above the hovered link's line box and clamp it into
-  the viewport. Change one, change all three — `test/button-geometry.test.js`
+  panel one button-height above the hovered link's line box (flush, no gap) and
+  clamp it into the viewport. Change one, change all three — `test/button-geometry.test.js`
   fails if they drift, and also fails if `content.css` was edited without
   re-running the inliner.
 
@@ -323,7 +324,7 @@ and re-opens the picker with the fresh list.
 | No button ever appears | Codelink is paused (check the popup), the host is not in `CODELINK_HOSTS`, the path has fewer than 3 segments, the daemon answered `NO_PROVIDER` (not a repo link), or it returned two empty lists *without naming a repo* (nothing local matches). All silent by design — but when the daemon does name a repo, you get the dimmed button with the red cross instead of silence, unless the popup turned it off. |
 | Button appears but the picker is empty | `openInstances` and `rootCandidates` disagreeing with the click path — check the daemon's `/resolve` output directly with `curl`. |
 
-Click the toolbar icon to open the popup: daemon status (with the kickstart
-command ready to copy when it is down), a pause switch, the can't-resolve badge
-switches, and debug logging. The icon itself is badged per tab — ✓ this page's
-repo is checked out locally, ✕ it is not, `!` the daemon is not running.
+Click the toolbar icon to open the popup: daemon status, a pause switch, the
+can't-resolve badge switches, and debug logging. The per-repo badge row keys
+off the last hovered repo link in the tab, so it appears only once you have
+hovered one.

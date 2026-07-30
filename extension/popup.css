@@ -61,24 +61,6 @@ body {
   background: var(--cl-warn);
 }
 
-#kickstart {
-  display: block;
-  margin: 8px 0 0;
-  padding: 5px 6px;
-  border-radius: 4px;
-  background: var(--cl-surface-hi);
-  color: var(--cl-text-dim);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
-  font-size: 10px;
-  line-height: 1.35;
-  word-break: break-all;
-  cursor: copy;
-}
-
-#kickstart:hover {
-  color: var(--cl-text);
-}
-
 .row {
   display: flex;
   align-items: center;

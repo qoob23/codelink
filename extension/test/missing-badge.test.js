@@ -69,6 +69,7 @@ function makeWorld(settings) {
 
   const sent = [];
   let onChanged = null;
+  let onRuntimeMessage = null;
   window.chrome = {
     runtime: {
       id: 'test',
@@ -80,6 +81,11 @@ function makeWorld(settings) {
           if (msg.type !== 'resolve') return cb({ ok: true, data: { ok: true } });
           cb(verdict(msg.url === URL_FILE ? 'FILE_NOT_LOCAL' : 'REPO_NOT_LOCAL'));
         }, 0);
+      },
+      onMessage: {
+        addListener(fn) {
+          onRuntimeMessage = fn;
+        },
       },
     },
     storage: {
@@ -123,6 +129,11 @@ function makeWorld(settings) {
     sent,
     user,
     fireSettings: (s) => onChanged && onChanged({ settings: { newValue: s } }, 'local'),
+    askRepoInfo: () => {
+      let out = null;
+      if (onRuntimeMessage) onRuntimeMessage({ type: 'repo-info' }, {}, (r) => (out = r));
+      return out;
+    },
   };
 }
 
@@ -156,6 +167,14 @@ const opens = (sent) => sent.filter((m) => m.type === 'open').length;
     btn.dispatchEvent(new w.window.MouseEvent('click', { bubbles: true }));
     await sleep(100);
     check('clicking the missing button opens nothing', opens(w.sent) === 0, opens(w.sent) + ' opens');
+
+    // The popup's per-repo row is fed from here: the last verdict that named a
+    // repo, keyed exactly like warnOverrides.
+    const info = w.askRepoInfo();
+    check("repo-info answers the popup with the page's repo",
+          info && info.key === 'code.example.com/you/widget' &&
+          info.label === 'code.example.com/you/widget',
+          JSON.stringify(info));
 
     w.user(w.window.document.getElementById('lnk1'),
            new w.window.MouseEvent('mouseout', { bubbles: true }));

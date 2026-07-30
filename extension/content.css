@@ -268,8 +268,8 @@
 .cl-tip {
   display: none;
   position: absolute;
-  /* clears the button: its 33px plus the same 4px gap content.js keeps between
-   * the link and the button. Derived, not chosen — it must track .cl-btn. */
+  /* clears the button: its 33px plus 4px of air between button and tooltip.
+   * Derived, not chosen — it must track .cl-btn. */
   top: 37px;
   left: 0;
   box-sizing: border-box;

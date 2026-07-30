@@ -202,10 +202,6 @@ function resolve(url) {
   return call('/resolve?url=' + encodeURIComponent(url), { method: 'GET' });
 }
 
-function repoStatus(url) {
-  return call('/repostatus?url=' + encodeURIComponent(url), { method: 'GET' });
-}
-
 function open(payload) {
   return call('/open', {
     method: 'POST',
@@ -238,156 +234,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // keep the message channel open for the async reply
   }
 
-  // Popup-only messages. The popup does no fetches of its own — everything the
+  // Popup-only message. The popup does no fetches of its own — everything the
   // daemon answers flows through here, same as for the content script.
   if (msg.type === 'status') {
     call('/health', { method: 'GET' }).then(sendResponse);
     return true; // keep the message channel open for the async reply
   }
 
-  if (msg.type === 'repostatus') {
-    if (typeof msg.url !== 'string' || !msg.url) {
-      sendResponse({ ok: false, kind: 'api', error: 'repostatus: missing url' });
-      return false;
-    }
-    repoStatus(msg.url).then(sendResponse);
-    return true; // keep the message channel open for the async reply
-  }
-
   return false;
 });
-
-// ------------------------------------------------------- toolbar icon status
-
-/*
- * The per-tab badge answers "will hovering do anything here?" before the first
- * hover: ✓ the page's repo has a local checkout, ✕ it does not, ! the daemon is
- * not running, nothing at all when the page names no repo (or codelink is
- * paused). The host list comes from hosts.gen.js, same generated file the
- * content script loads — importScripts is worker-evaluation-only, so like the
- * token above it cannot be retried, and a missing file (fresh checkout, daemon
- * never run) just means no badges until the next reload.
- */
-let HOSTS = [];
-try {
-  importScripts('hosts.gen.js');
-  if (Array.isArray(self.CODELINK_HOSTS)) HOSTS = self.CODELINK_HOSTS.slice();
-} catch (e) {
-  /* hosts.gen.js not generated yet — badges stay off */
-}
-
-function hostMatches(hostname) {
-  const h = String(hostname || '').toLowerCase();
-  for (const glob of HOSTS) {
-    const g = String(glob || '').toLowerCase();
-    if (!g) continue;
-    if (g === h) return true;
-    if (g.startsWith('*.')) {
-      const base = g.slice(2);
-      if (h === base || h.endsWith('.' + base)) return true;
-    }
-  }
-  return false;
-}
-
-async function isPaused() {
-  try {
-    const got = await chrome.storage.local.get('settings');
-    return Boolean(got && got.settings && got.settings.paused === true);
-  } catch (e) {
-    return false;
-  }
-}
-
-/*
- * One verdict per URL for a short window. SPA navigation fires onUpdated in
- * bursts for the same URL, and each miss would otherwise cost the daemon a
- * providers pass; 15 s is short enough that cloning a repo shows up on the
- * next real navigation.
- */
-const badgeCache = new Map(); // url -> {v: verdict, exp}
-const BADGE_TTL = 15000;
-const BADGE_CACHE_MAX = 200;
-
-async function repoVerdict(url) {
-  const hit = badgeCache.get(url);
-  if (hit && Date.now() < hit.exp) return hit.v;
-  const reply = await repoStatus(url);
-  let v;
-  if (reply.ok && reply.data && reply.data.local === true) v = 'local';
-  else if (reply.ok && reply.data && reply.data.local === false) v = 'missing';
-  else if (reply.kind === 'daemon-down') v = 'down';
-  else v = 'none'; // NO_PROVIDER / NOT_A_REPO_PAGE / auth trouble: say nothing
-  badgeCache.set(url, { v, exp: Date.now() + BADGE_TTL });
-  if (badgeCache.size > BADGE_CACHE_MAX) {
-    badgeCache.delete(badgeCache.keys().next().value);
-  }
-  return v;
-}
-
-const BADGE = {
-  local: { text: '✓', color: '#57a143', title: 'codelink — this repo is checked out locally' },
-  missing: { text: '✕', color: '#6b7280', title: 'codelink — this repo has no local checkout' },
-  down: { text: '!', color: '#b26b00', title: 'codelink — daemon is not running' },
-  none: { text: '', color: '#6b7280', title: 'codelink' },
-};
-
-async function updateBadge(tabId, url) {
-  let verdict = 'none';
-  try {
-    let u = null;
-    try {
-      u = new URL(url);
-    } catch (e) {
-      u = null;
-    }
-    const eligible =
-      u && (u.protocol === 'https:' || u.protocol === 'http:') && hostMatches(u.hostname);
-    if (eligible && !(await isPaused())) {
-      verdict = await repoVerdict(url);
-    }
-    // A slow verdict must not paint over a newer navigation: by the time the
-    // daemon answered, this tab may already show a different URL.
-    const now = await chrome.tabs.get(tabId);
-    if (!now || now.url !== url) return;
-    const b = BADGE[verdict] || BADGE.none;
-    await chrome.action.setBadgeText({ tabId, text: b.text });
-    if (b.text) await chrome.action.setBadgeBackgroundColor({ tabId, color: b.color });
-    await chrome.action.setTitle({ tabId, title: b.title });
-  } catch (e) {
-    /* tab may be gone by the time we answer; badge APIs are best-effort */
-  }
-}
-
-if (chrome.tabs && chrome.tabs.onActivated) {
-  chrome.tabs.onActivated.addListener(async (info) => {
-    try {
-      const tab = await chrome.tabs.get(info.tabId);
-      if (tab && tab.url) updateBadge(info.tabId, tab.url);
-    } catch (e) {
-      /* tab gone */
-    }
-  });
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (!changeInfo.url && changeInfo.status !== 'complete') return;
-    if (tab && tab.url) updateBadge(tabId, tab.url);
-  });
-}
-
-// A settings flip (pause on/off) must reflect on the tab the user is looking at
-// without a navigation.
-try {
-  chrome.storage.onChanged.addListener(async (changes, area) => {
-    if (area !== 'local' || !changes.settings) return;
-    try {
-      const tabs = await chrome.tabs.query({ active: true });
-      for (const tab of tabs) {
-        if (tab.id != null && tab.url) updateBadge(tab.id, tab.url);
-      }
-    } catch (e) {
-      /* best-effort */
-    }
-  });
-} catch (e) {
-  /* no storage permission: nothing to react to */
-}

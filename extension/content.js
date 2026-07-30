@@ -21,7 +21,8 @@
 
   // ---------------------------------------------------------------- constants
 
-  var HOVER_DELAY = 150; // debounce before we bother the daemon
+  var RESOLVE_DELAY = 150; // dwell before we bother the daemon; the PAINT is instant
+  var SPIN_DELAY = 200; // resolve in flight this long before the spinner shows
   var HIDE_DELAY = 120; // grace period so the mouse can travel link -> button
   var OK_DELAY = 900; // how long the success checkmark stays up
   var MIN_SEGMENTS = 3; // coarse triage: nav routes are shorter than file paths
@@ -324,8 +325,8 @@
 .cl-tip {
   display: none;
   position: absolute;
-  /* clears the button: its 33px plus the same 4px gap content.js keeps between
-   * the link and the button. Derived, not chosen — it must track .cl-btn. */
+  /* clears the button: its 33px plus 4px of air between button and tooltip.
+   * Derived, not chosen — it must track .cl-btn. */
   top: 37px;
   left: 0;
   box-sizing: border-box;
@@ -799,10 +800,11 @@
   var lastRect = null; // last good anchor rect, for repositioning past its death
   var pointerX = null; // clientX of the trusted mouseover that started this show
   var overPanel = false; // pointer is inside the overlay right now
-  var pendingAnchor = null; // anchor whose HOVER_DELAY timer is running
+  var lastRepo = null; // {key, label} of the most recent verdict that named a repo
 
   var hideTimer = 0; // the single shared hide timer — see startHide/cancelHide
-  var showTimer = 0;
+  var resolveTimer = 0; // the RESOLVE_DELAY dwell timer — see scheduleShow
+  var spinTimer = 0; // the SPIN_DELAY timer — see renderLoading/beginResolve
   var okTimer = 0;
 
   /*
@@ -851,8 +853,9 @@
    * Per-repo override key: "<host>/<owner>/<repo>". The host comes from the URL
    * that produced the verdict (lowercased, as hostnames are case-insensitive);
    * owner and repo are echoed verbatim from the daemon, which is the only party
-   * that knows how a provider spells them. The popup builds the identical key
-   * from /repostatus, so the two agree without either side re-parsing a URL.
+   * that knows how a provider spells them. The popup never builds this key: it
+   * receives it prebuilt through the repo-info message, so the two sides cannot
+   * drift and nothing outside this function re-parses a URL.
    */
   function overrideKey(url, owner, repo) {
     var h;
@@ -984,16 +987,13 @@
 
   function hideNow() {
     cancelHide();
-    if (showTimer) {
-      clearTimeout(showTimer);
-      showTimer = 0;
-    }
+    stopDwell();
+    clearSpin();
     if (okTimer) {
       clearTimeout(okTimer);
       okTimer = 0;
     }
     reqSeq++;
-    pendingAnchor = null;
     pinned = false;
     // reqSeq++ above already invalidates any in-flight reply.
     busy = false;
@@ -1095,12 +1095,14 @@
      */
     var px = typeof pointerX === 'number' ? pointerX : r.left;
     var left = px + POINTER_DX;
-    var top = r.top - GAP - BTN;
-    // No room above — a link on the first line of the viewport. Mirror the same
-    // offset below, which is the only other place that does not cover the line.
+    // Flush with the line box, no vertical gap: every px of air here is a px
+    // the pointer has to travel, and the button never overlaps the line anyway.
+    var top = r.top - BTN;
+    // No room above — a link on the first line of the viewport. Mirror below,
+    // which is the only other place that does not cover the line.
     var above = true;
     if (top < GAP) {
-      top = r.bottom + GAP;
+      top = r.bottom;
       above = false;
     }
     left = Math.max(GAP, Math.min(left, vw - pw - GAP));
@@ -1213,14 +1215,29 @@
     reposition();
   }
 
+  /*
+   * The pre-verdict state paints the PLAIN button, not the spinner: the daemon
+   * answers in single-digit milliseconds normally, and a spinner that flashes
+   * on every hover reads as latency codelink does not have. beginResolve arms
+   * the spinner separately, SPIN_DELAY after the request actually went out, so
+   * it only ever shows against a daemon that is genuinely slow.
+   */
   function renderLoading() {
+    clearSpin();
     uiMode = 'loading';
     btn.style.display = '';
     picker.classList.remove('is-on');
     hideTip();
-    btn.className = 'cl-btn is-loading';
+    btn.className = 'cl-btn';
     btn.setAttribute('aria-label', 'codelink: resolving…');
     showPanel();
+  }
+
+  function clearSpin() {
+    if (spinTimer) {
+      clearTimeout(spinTimer);
+      spinTimer = 0;
+    }
   }
 
   function renderReady() {
@@ -1539,10 +1556,12 @@
       return;
     }
     if (uiMode === 'error') {
-      // a retry is the only useful action here
+      // A retry is the only useful action here — and an explicit click IS the
+      // dwell, so the daemon is asked immediately rather than after the delay.
       if (anchorEl && anchorUrl) {
         cache.delete(anchorUrl);
-        beginShow(anchorEl, anchorUrl, pointerX);
+        renderLoading();
+        beginResolve(anchorEl, anchorUrl);
       }
       return;
     }
@@ -1622,68 +1641,131 @@
   // -------------------------------------------------------------- hover flow
 
   /*
-   * `px` is the clientX of the mouseover that triggered this — captured here and
-   * carried all the way to reposition(), because by the time the button paints
-   * (HOVER_DELAY later, then a round trip to the daemon) the event is long gone
-   * and the content script has no other way to know where the cursor is. Only
-   * the FIRST mouseover on an anchor sets it, so the button lands where the
-   * pointer entered the link and then stays put instead of chasing the cursor.
+   * The hover flow paints FIRST and asks the daemon LATER. scheduleShow runs on
+   * every trusted mouseover of a triaged link and re-targets the overlay in the
+   * same tick — a cached verdict renders its final state, an unknown link
+   * paints the loading circle — and only once the pointer has DWELT
+   * RESOLVE_DELAY on the link is the daemon asked. Scanning quickly down a list
+   * of links therefore moves the button instantly from link to link and sends
+   * nothing at all for the links merely passed through. (The old shape gated
+   * the PAINT on the delay, so exactly that scan kept resetting it and the
+   * button lagged or never came.)
+   *
+   * `px` is the clientX of the mouseover that triggered this — captured and
+   * carried to reposition(), because by the time anything paints the event is
+   * long gone and the content script has no other way to know where the cursor
+   * is. Only the first mouseover on an anchor sets it, so the button lands
+   * where the pointer entered the link and stays put instead of chasing it.
    */
   function scheduleShow(a, px) {
     var url = a.href;
 
+    if (pinned) return;
+    // The mouseover gate covers the ordinary path; this covers a hover that was
+    // already being processed when the pause landed.
+    if (settings.paused) return;
     if (a === anchorEl && uiMode !== 'hidden') {
       cancelHide();
+      // A dwell that a leave cancelled must be re-armed on re-entry, or the
+      // plain button would sit unresolved forever.
+      if (uiMode === 'loading' && !resolveTimer && !busy) armDwell(a, url);
       return;
     }
-    if (a === pendingAnchor) return;
-
-    pendingAnchor = a;
-    if (showTimer) clearTimeout(showTimer);
-    showTimer = setTimeout(function () {
-      showTimer = 0;
-      if (pendingAnchor !== a) return;
-      pendingAnchor = null;
-      beginShow(a, url, px);
-    }, HOVER_DELAY);
-  }
-
-  function beginShow(a, url, px) {
-    if (pinned) return;
-    // The mouseover gate covers the ordinary path; this covers a showTimer that
-    // was already armed when the pause landed.
-    if (settings.paused) return;
-    cancelHide();
 
     var cached = cacheGet(url);
-    if (cached && cached.kind === 'skip') return;
-    // A cached 'missing' verdict is re-gated on every hover rather than at the
-    // moment it was stored, so turning the badges off in the popup takes effect
-    // on links this tab has already seen — without a reload and without waiting
-    // out the TTL.
-    if (cached && cached.kind === 'missing' && !badgeVisible(url, cached.owner, cached.repo)) return;
+    /*
+     * Known-silent links return BEFORE cancelHide(), so a hide already in
+     * flight for the previous link still completes — hopping from a painted
+     * link onto a known-skip link must not strand the old button. They DO stop
+     * a pending dwell: the pointer is provably elsewhere now, and the previous
+     * link was merely passed through. The 'missing' gate is re-checked on every
+     * hover rather than at store time, so turning the badges off in the popup
+     * takes effect on links this tab has already seen, without a reload and
+     * without waiting out the TTL.
+     */
+    if (cached && cached.kind === 'skip') {
+      stopDwell();
+      return;
+    }
+    if (cached && cached.kind === 'missing' && !badgeVisible(url, cached.owner, cached.repo)) {
+      noteRepo(url, cached.owner, cached.repo);
+      stopDwell();
+      return;
+    }
 
+    cancelHide();
+    stopDwell();
     anchorEl = a;
     anchorUrl = url;
     if (typeof px === 'number') pointerX = px;
 
     if (cached && cached.kind === 'ok') {
       entry = cached;
+      noteRepo(url, cached.data.parsed.owner, cached.data.parsed.repo);
       renderReady();
       return;
     }
     if (cached && cached.kind === 'missing') {
       entry = cached;
+      noteRepo(url, cached.owner, cached.repo);
       renderMissing();
       return;
     }
 
     entry = null;
     renderLoading();
+    armDwell(a, url);
+  }
 
+  function armDwell(a, url) {
+    resolveTimer = setTimeout(function () {
+      resolveTimer = 0;
+      if (anchorEl !== a || pinned) return;
+      beginResolve(a, url);
+    }, RESOLVE_DELAY);
+  }
+
+  function stopDwell() {
+    if (resolveTimer) {
+      clearTimeout(resolveTimer);
+      resolveTimer = 0;
+    }
+  }
+
+  /*
+   * The popup's per-repo switch needs to know which repository the page is
+   * about, and only verdicts carry that answer — so every one that names a repo
+   * is remembered, gated or not: "enable badges for this repo" must work even
+   * while the global switch keeps them all hidden.
+   */
+  function noteRepo(url, owner, repo) {
+    if (typeof repo !== 'string' || !repo) return;
+    var o = typeof owner === 'string' ? owner : '';
+    var h;
+    try {
+      h = new URL(url, location.href).hostname.toLowerCase();
+    } catch (e) {
+      h = String(location.hostname || '').toLowerCase();
+    }
+    lastRepo = {
+      key: overrideKey(url, o, repo),
+      label: h + '/' + (o ? o + '/' : '') + repo,
+    };
+  }
+
+  function beginResolve(a, url) {
     var seq = ++reqSeq;
+    // The spinner clock starts when the request goes out, not when the button
+    // painted: it measures the daemon, not the dwell.
+    clearSpin();
+    spinTimer = setTimeout(function () {
+      spinTimer = 0;
+      if (seq !== reqSeq || uiMode !== 'loading') return;
+      btn.className = 'cl-btn is-loading';
+    }, SPIN_DELAY);
     send({ type: 'resolve', url: url }).then(function (reply) {
       if (seq !== reqSeq || anchorEl !== a) return;
+      clearSpin();
 
       if (reply.ok) {
         var raw = reply.data && typeof reply.data === 'object' ? reply.data : {};
@@ -1695,7 +1777,7 @@
            * "not ours" and must stay silent. `code` lives on the raw payload —
            * normalize() strips unknown fields on purpose. Cached even when the
            * badge is toggled off: the verdict is the expensive part, and
-           * beginShow re-gates visibility on every hover, so flipping the popup
+           * scheduleShow re-gates visibility on every hover, so flipping the popup
            * switch takes effect without waiting out a re-resolve.
            */
           var code = raw.code;
@@ -1709,6 +1791,7 @@
               repoPath: typeof data.parsed.repoPath === 'string' ? data.parsed.repoPath : '',
             };
             cachePut(url, miss, CACHE_TTL);
+            noteRepo(url, miss.owner, miss.repo);
             if (!badgeVisible(url, miss.owner, miss.repo)) {
               hideNow();
               return;
@@ -1730,6 +1813,7 @@
         }
         entry = { kind: 'ok', data: data };
         cachePut(url, entry, CACHE_TTL);
+        noteRepo(url, data.parsed.owner, data.parsed.repo);
         renderReady();
         return;
       }
@@ -1823,14 +1907,18 @@
       if (!a) return;
       var to = e.relatedTarget;
       if (to instanceof Node && a.contains(to)) return; // still within the anchor
-      if (a === pendingAnchor) {
-        pendingAnchor = null;
-        if (showTimer) {
-          clearTimeout(showTimer);
-          showTimer = 0;
-        }
+      if (a === anchorEl) {
+        /*
+         * Leaving the link cancels a dwell still pending: the daemon must not
+         * be asked about a link merely passed through, and the reply would
+         * repaint a button the pointer has already abandoned. The one
+         * exception is leaving ONTO the overlay itself — events from the
+         * closed shadow root retarget to its host — which is ordinary travel
+         * toward a button that sits flush against the link.
+         */
+        if (!(to instanceof Node && to === host)) stopDwell();
+        startHide();
       }
-      if (a === anchorEl) startHide();
     },
     true
   );
@@ -1894,6 +1982,20 @@
     },
     true
   );
+
+  /*
+   * Answers the popup's "which repo is this page about?". Only extension
+   * contexts can reach this: without externally_connectable in the manifest,
+   * page scripts cannot address this extension's runtime messaging at all.
+   * Guarded, because the jsdom harnesses stub chrome.runtime without onMessage.
+   */
+  try {
+    chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
+      if (msg && msg.type === 'repo-info') sendResponse(lastRepo || {});
+    });
+  } catch (e) {
+    /* no runtime messaging here */
+  }
 
   document.addEventListener('scroll', onViewportChange, { passive: true, capture: true });
   window.addEventListener('resize', onViewportChange, { passive: true });

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -359,9 +358,8 @@ func TestSpawnWorkdirRejectsSymlinkEscape(t *testing.T) {
 // repoServer builds a server over two same-shaped checkouts plus one that the
 // roots glob cannot reach, and a provider that captures a repo group on /code/
 // but not on /src/ — so one config exercises both the filtered and the
-// historical unfiltered path. /o/ additionally captures an owner, and repoPage
-// recognises the repo-level pages /repostatus answers about; both are inert for
-// the /code/ and /src/ cases.
+// historical unfiltered path. /o/ additionally captures an owner, inert for the
+// /code/ and /src/ cases.
 //
 // aliasRel, when set, is registered as the repoAliases target for "widgets".
 func repoServer(t *testing.T, aliasRel string) (srv *Server, base string) {
@@ -389,7 +387,6 @@ func repoServer(t *testing.T, aliasRel string) (srv *Server, base string) {
           {"path":"^/code/(?P<repo>[^/]+)/(?P<repoPath>.+)$"},
           {"path":"^/src/(?P<repoPath>.+)$"},
           {"path":"^/o/(?P<owner>[^/]+)/(?P<repo>[^/]+)/(?P<repoPath>.+)$"}],
-        "repoPage":"^/repo/(?P<owner>[^/]+)/(?P<repo>[^/]+)(?:/tree/.*)?/?$",
         "projectMarkers":["lib"],
         "roots":[{"glob":%q}]%s}]}`,
 		filepath.Join(base, "checkouts", "*"), aliases), bin)
@@ -701,148 +698,10 @@ func authGet(t *testing.T, srv *Server, target string) (int, map[string]any) {
 	return rec.Code, body
 }
 
-func keysOf(m map[string]any) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	slices.Sort(out)
-	return out
-}
-
-// TestRepoStatus pins all four answer shapes. The keys are asserted exactly,
-// not just the values: the miss shapes must NOT carry local/roots, or a caller
-// would read "this page is not a repo page" as "this repo is not checked out".
-func TestRepoStatus(t *testing.T) {
-	srv, base := repoServer(t, "elsewhere/neurons")
-
-	tests := []struct {
-		name      string
-		url       string
-		wantKeys  []string
-		wantCode  string
-		wantLocal bool
-		wantOwner string
-		wantRepo  string
-		wantRoots []string
-	}{
-		{
-			name: "a checked-out repository", url: "https://a.example.com/repo/acme/synapses",
-			wantKeys:  []string{"local", "ok", "owner", "provider", "repo", "roots"},
-			wantLocal: true, wantOwner: "acme", wantRepo: "synapses",
-			wantRoots: []string{filepath.Join(base, "checkouts", "synapses")},
-		},
-		{
-			name: "a tree page deeper in the same repository", url: "https://a.example.com/repo/acme/synapses/tree/main/lib",
-			wantKeys:  []string{"local", "ok", "owner", "provider", "repo", "roots"},
-			wantLocal: true, wantOwner: "acme", wantRepo: "synapses",
-			wantRoots: []string{filepath.Join(base, "checkouts", "synapses")},
-		},
-		{
-			// No file was probed anywhere here — the repo page names none — so
-			// this is purely "which checkouts could serve this repository".
-			name: "a repository nothing local serves", url: "https://a.example.com/repo/acme/ghost",
-			wantKeys: []string{"code", "local", "ok", "owner", "provider", "repo", "roots"},
-			wantCode: CodeRepoNotLocal, wantLocal: false, wantOwner: "acme", wantRepo: "ghost",
-			wantRoots: []string{},
-		},
-		{
-			name: "a repository reached only through an alias", url: "https://a.example.com/repo/acme/widgets",
-			wantKeys:  []string{"local", "ok", "owner", "provider", "repo", "roots"},
-			wantLocal: true, wantOwner: "acme", wantRepo: "widgets",
-			wantRoots: []string{filepath.Join(base, "elsewhere", "neurons")},
-		},
-		{
-			name: "a file link is not a repo page", url: "https://a.example.com/code/synapses/lib/x.go",
-			wantKeys: []string{"code", "ok"}, wantCode: CodeNotARepoPage,
-		},
-		{
-			name: "a page on the host that matches no repoPage form", url: "https://a.example.com/settings",
-			wantKeys: []string{"code", "ok"}, wantCode: CodeNotARepoPage,
-		},
-		{
-			name: "a host no provider claims", url: "https://code.other-host.org/repo/acme/synapses",
-			wantKeys: []string{"code", "ok"}, wantCode: CodeNoProvider,
-		},
-		{
-			// url.Parse hands this a host, but the daemon never treats a scheme
-			// the browser would not navigate as a code host — same rule /resolve
-			// applies.
-			name: "a javascript: URL is not a code host", url: "javascript://a.example.com/repo/acme/synapses",
-			wantKeys: []string{"code", "ok"}, wantCode: CodeNoProvider,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			status, body := authGet(t, srv, "/repostatus?url="+url.QueryEscape(tc.url))
-			if status != http.StatusOK {
-				t.Fatalf("status = %d, want 200", status)
-			}
-			if got := keysOf(body); !slices.Equal(got, tc.wantKeys) {
-				t.Fatalf("keys = %v, want %v (body %v)", got, tc.wantKeys, body)
-			}
-			wantOK := tc.wantCode != CodeNotARepoPage && tc.wantCode != CodeNoProvider
-			if body["ok"] != wantOK {
-				t.Errorf("ok = %v, want %v", body["ok"], wantOK)
-			}
-			if tc.wantCode != "" && body["code"] != tc.wantCode {
-				t.Errorf("code = %v, want %q", body["code"], tc.wantCode)
-			}
-			if !wantOK {
-				return
-			}
-			if body["provider"] != "t" {
-				t.Errorf("provider = %v, want t", body["provider"])
-			}
-			if body["owner"] != tc.wantOwner {
-				t.Errorf("owner = %v, want %q", body["owner"], tc.wantOwner)
-			}
-			if body["repo"] != tc.wantRepo {
-				t.Errorf("repo = %v, want %q", body["repo"], tc.wantRepo)
-			}
-			if body["local"] != tc.wantLocal {
-				t.Errorf("local = %v, want %v", body["local"], tc.wantLocal)
-			}
-			var gotRoots []string
-			for _, r := range body["roots"].([]any) {
-				entry := r.(map[string]any)
-				if !slices.Equal(keysOf(entry), []string{"label", "root"}) {
-					t.Errorf("roots entry keys = %v, want [label root]", keysOf(entry))
-				}
-				gotRoots = append(gotRoots, entry["root"].(string))
-			}
-			slices.Sort(gotRoots)
-			if len(gotRoots) != len(tc.wantRoots) {
-				t.Fatalf("roots = %v, want %v", gotRoots, tc.wantRoots)
-			}
-			for i := range gotRoots {
-				if gotRoots[i] != tc.wantRoots[i] {
-					t.Errorf("roots[%d] = %q, want %q", i, gotRoots[i], tc.wantRoots[i])
-				}
-			}
-		})
-	}
-}
-
-// TestRepoStatusRejectsMissingURL: the endpoint answers about a page, so with no
-// page named there is nothing to answer — and that is a caller bug, not a "no
-// provider" verdict about some URL.
-func TestRepoStatusRejectsMissingURL(t *testing.T) {
-	srv, _ := repoServer(t, "")
-	status, body := authGet(t, srv, "/repostatus")
-	if status != http.StatusOK {
-		t.Fatalf("status = %d, want 200", status)
-	}
-	if body["ok"] != false || body["code"] != CodeBadRequest {
-		t.Errorf("body = %v, want ok=false code=%s", body, CodeBadRequest)
-	}
-}
-
-// TestRepoStatusRequiresAuth: the new endpoint reads the same providers config
-// and root layout as every other one, so it has to sit behind the same guard. It
-// is routed through the shared middleware precisely so this cannot be forgotten,
-// and this test is what proves the routing did not bypass it.
-func TestRepoStatusRequiresAuth(t *testing.T) {
+// TestResolveRequiresAuth proves the shared auth middleware guards the routed
+// mux: every endpoint is registered behind it, so one endpoint's matrix covers
+// the routing.
+func TestResolveRequiresAuth(t *testing.T) {
 	srv, _ := repoServer(t, "")
 	t.Setenv("CODELINK_QUIET", "1")
 	h := srv.Handler()
@@ -862,7 +721,7 @@ func TestRepoStatusRequiresAuth(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/repostatus?url=https://a.example.com/repo/acme/synapses", nil)
+			req := httptest.NewRequest(http.MethodGet, "/resolve?url=https://a.example.com/code/synapses/lib/x.go", nil)
 			req.Host = tc.host
 			if tc.client != "" {
 				req.Header.Set("X-Codelink-Client", tc.client)
@@ -879,11 +738,10 @@ func TestRepoStatusRequiresAuth(t *testing.T) {
 	}
 }
 
-// TestRepoStatusCORSPinsTheExtensionOrigin: the CORS policy IS the anti-CSRF
-// mechanism, so a page on a provider host — which is exactly where the extension
-// runs its content script — must get no Access-Control headers from the new
-// endpoint either.
-func TestRepoStatusCORSPinsTheExtensionOrigin(t *testing.T) {
+// TestCORSPinsTheExtensionOrigin: the CORS policy IS the anti-CSRF mechanism,
+// so a page on a provider host — which is exactly where the extension runs its
+// content script — must get no Access-Control headers.
+func TestCORSPinsTheExtensionOrigin(t *testing.T) {
 	srv, _ := repoServer(t, "")
 	t.Setenv("CODELINK_QUIET", "1")
 	h := srv.Handler()
@@ -900,7 +758,7 @@ func TestRepoStatusCORSPinsTheExtensionOrigin(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/repostatus?url=https://a.example.com/repo/acme/synapses", nil)
+			req := httptest.NewRequest(http.MethodGet, "/resolve?url=https://a.example.com/code/synapses/lib/x.go", nil)
 			req.Host = fmt.Sprintf("127.0.0.1:%d", testPort)
 			req.Header.Set("Origin", tc.origin)
 			req.Header.Set("X-Codelink-Client", "ext")
@@ -935,6 +793,19 @@ func TestHealthIsTheLivenessEndpoint(t *testing.T) {
 	}
 	if pid, ok := body["pid"].(float64); !ok || int(pid) != os.Getpid() {
 		t.Errorf("pid = %v, want %d", body["pid"], os.Getpid())
+	}
+}
+
+// TestResolveRejectsMissingURL: no url named means nothing to resolve — a
+// caller bug reported inside a 200, like every logical failure on this API.
+func TestResolveRejectsMissingURL(t *testing.T) {
+	srv, _ := repoServer(t, "")
+	status, body := authGet(t, srv, "/resolve")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if body["ok"] != false || body["code"] != CodeBadRequest {
+		t.Errorf("body = %v, want ok=false code=%s", body, CodeBadRequest)
 	}
 }
 
