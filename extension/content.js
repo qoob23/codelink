@@ -21,13 +21,14 @@
 
   // ---------------------------------------------------------------- constants
 
-  var RESOLVE_DELAY = 150; // dwell before we bother the daemon; the PAINT is instant
-  var SPIN_DELAY = 200; // resolve in flight this long before the spinner shows
+  var RESOLVE_DELAY = 150; // dwell before we bother the daemon; nothing paints until it answers
   var HIDE_DELAY = 120; // grace period so the mouse can travel link -> button
   var OK_DELAY = 900; // how long the success checkmark stays up
   var MIN_SEGMENTS = 3; // coarse triage: nav routes are shorter than file paths
   var CACHE_MAX = 400; // resolve-cache ceiling, LRU-evicted
   var CACHE_TTL = 10000; // ms a machine-state-dependent resolve stays fresh
+  var PROJECT_MAX = 64; // known-local-project ceiling, LRU-evicted
+  var PROJECT_TTL = 5 * 60 * 1000; // ms a "this project is cloned here" belief stays fresh
   var GAP = 4; // px between the link box and the button
   var BTN = 33; // .cl-btn width/height — must match content.css, see reposition()
   var POINTER_DX = 10; // px right of the pointer where the button's left edge lands
@@ -794,17 +795,19 @@
   var anchorEl = null; // the <a> the panel currently belongs to
   var anchorUrl = '';
   var entry = null; // {kind:'ok', data} | {kind:'missing', …} for anchorUrl
-  var uiMode = 'hidden'; // hidden | loading | ready | missing | down | error | ok | picker
+  var uiMode = 'hidden'; // hidden | silent | ready | missing | down | error | ok | picker
   var pinned = false; // picker open: ignore hover-out entirely
   var busy = false; // an /open round trip is in flight: survive a dying anchor
   var lastRect = null; // last good anchor rect, for repositioning past its death
   var pointerX = null; // clientX of the trusted mouseover that started this show
   var overPanel = false; // pointer is inside the overlay right now
   var lastRepo = null; // {key, label} of the most recent verdict that named a repo
+  // {shift} when the optimistic button was clicked before its verdict landed —
+  // see onButtonClick. Null the rest of the time.
+  var openOnResolve = null;
 
   var hideTimer = 0; // the single shared hide timer — see startHide/cancelHide
   var resolveTimer = 0; // the RESOLVE_DELAY dwell timer — see scheduleShow
-  var spinTimer = 0; // the SPIN_DELAY timer — see renderLoading/beginResolve
   var okTimer = 0;
 
   /*
@@ -949,6 +952,67 @@
     return hit.v;
   }
 
+  /*
+   * Which PROJECTS this tab has proven to exist on the machine — the one thing
+   * that lets a never-seen link paint before its own verdict is in.
+   *
+   * The key is a heuristic, not a URL grammar: hostname plus the first two
+   * non-empty path segments, lowercased. It is deliberately not derived from the
+   * daemon's `parsed` fields, because it has to be computable from a bare href
+   * at hover time, before anything has been asked. It is the SAME derivation on
+   * both sides, so whatever a provider's URL shape happens to be, learn and
+   * lookup agree with each other — and it only ever gates an optimistic paint
+   * that the arriving verdict is free to overrule. The daemon stays the source
+   * of truth; being wrong here costs one corrected icon, never a wrong file.
+   *
+   * Expiring and bounded for the same reasons as the URL cache above: a clone
+   * can appear or disappear under a long-lived tab, and a session hops through
+   * more projects than it is worth remembering. Same delete-then-set idiom, so
+   * the first key is always the least recently confirmed.
+   */
+  var projects = new Map(); // projKey -> expiry timestamp
+
+  function projKey(url) {
+    var u;
+    try {
+      u = new URL(url, location.href);
+    } catch (e) {
+      return '';
+    }
+    var segs = u.pathname.split('/').filter(Boolean);
+    if (segs.length < 2) return '';
+    return u.hostname.toLowerCase() + '/' + segs[0].toLowerCase() + '/' + segs[1].toLowerCase();
+  }
+
+  function projLearn(url) {
+    var k = projKey(url);
+    if (!k) return;
+    if (projects.has(k)) projects.delete(k);
+    projects.set(k, Date.now() + PROJECT_TTL);
+    while (projects.size > PROJECT_MAX) {
+      var oldest = projects.keys().next().value;
+      if (oldest === undefined) break;
+      projects.delete(oldest);
+    }
+  }
+
+  function projForget(url) {
+    var k = projKey(url);
+    if (k) projects.delete(k);
+  }
+
+  function projIsLocal(url) {
+    var k = projKey(url);
+    if (!k) return false;
+    var exp = projects.get(k);
+    if (exp === undefined) return false;
+    if (Date.now() >= exp) {
+      projects.delete(k);
+      return false;
+    }
+    return true;
+  }
+
   var pickerRows = [];
   var pickerItems = [];
   var pickerKind = 'existing';
@@ -988,7 +1052,10 @@
   function hideNow() {
     cancelHide();
     stopDwell();
-    clearSpin();
+    // A click that was waiting on a verdict dies with the button it was made
+    // on: the pointer has left, and opening a file for an abandoned link is the
+    // one failure this state machine must never have.
+    openOnResolve = null;
     if (okTimer) {
       clearTimeout(okTimer);
       okTimer = 0;
@@ -1216,38 +1283,35 @@
   }
 
   /*
-   * The pre-verdict state paints the PLAIN button, not the spinner: the daemon
-   * answers in single-digit milliseconds normally, and a spinner that flashes
-   * on every hover reads as latency codelink does not have. beginResolve arms
-   * the spinner separately, SPIN_DELAY after the request actually went out, so
-   * it only ever shows against a daemon that is genuinely slow.
+   * Tracked, but not painted. The overlay owns the anchor — the dwell, the
+   * leave handlers and the reply's anchorEl check all key off it — while the
+   * panel stays closed, so an unknown link costs the page nothing visible until
+   * the daemon has actually said something. There is no pre-verdict state on
+   * screen: the button's presence IS the verdict.
    */
-  function renderLoading() {
-    clearSpin();
-    uiMode = 'loading';
+  function renderSilent() {
+    uiMode = 'silent';
     btn.style.display = '';
     picker.classList.remove('is-on');
     hideTip();
     btn.className = 'cl-btn';
-    btn.setAttribute('aria-label', 'codelink: resolving…');
-    showPanel();
+    btn.setAttribute('aria-label', 'Open in Neovim');
+    panel.classList.remove('is-open');
   }
 
-  function clearSpin() {
-    if (spinTimer) {
-      clearTimeout(spinTimer);
-      spinTimer = 0;
-    }
-  }
-
+  /*
+   * With no `entry` this is the OPTIMISTIC paint: another link in the same
+   * project already resolved, so the button is put up before this URL's own
+   * verdict. Everything that needs the payload — the ref badge, the tooltip,
+   * the click — reads okData() and finds null until the reply lands.
+   */
   function renderReady() {
     var d = okData();
-    if (!d) return;
     uiMode = 'ready';
     btn.style.display = '';
     picker.classList.remove('is-on');
     hideTip();
-    var odd = d.parsed.refIsDefault === false;
+    var odd = Boolean(d) && d.parsed.refIsDefault === false;
     btn.className = 'cl-btn' + (odd ? ' has-badge' : '');
     btn.setAttribute('aria-label', 'Open in Neovim');
     showPanel();
@@ -1558,16 +1622,40 @@
     if (uiMode === 'error') {
       // A retry is the only useful action here — and an explicit click IS the
       // dwell, so the daemon is asked immediately rather than after the delay.
+      // The error button stays up meanwhile: the reply repaints it either way,
+      // and blanking it first would only make a fast retry flicker.
       if (anchorEl && anchorUrl) {
         cache.delete(anchorUrl);
-        renderLoading();
         beginResolve(anchorEl, anchorUrl);
       }
       return;
     }
-    if (uiMode !== 'ready' || !d) return;
+    if (uiMode !== 'ready') return;
 
-    if (e.shiftKey) {
+    if (!d) {
+      /*
+       * The optimistic button: painted on this project's reputation, its own
+       * verdict still owed. The click IS the dwell — ask now rather than waiting
+       * out the timer, and replay the click when the answer arrives. If the
+       * answer is a missing verdict instead, the warning that paints IS the
+       * answer and nothing opens.
+       */
+      if (!anchorEl || !anchorUrl) return;
+      openOnResolve = { shift: e.shiftKey };
+      stopDwell();
+      beginResolve(anchorEl, anchorUrl);
+      return;
+    }
+    activate(d, e.shiftKey);
+  }
+
+  /*
+   * What a click on a live ready button does. Shared verbatim with the
+   * click-before-verdict path, which replays it once the payload is in hand, so
+   * a click that raced the daemon and one that did not cannot drift apart.
+   */
+  function activate(d, shift) {
+    if (shift) {
       if (d.rootCandidates.length) openPicker('new');
       else showTip('no local checkout contains this path');
       return;
@@ -1591,6 +1679,17 @@
   function doOpen(payload, allowRetry) {
     var seq = ++reqSeq;
     var url = anchorUrl;
+    /*
+     * The round trip must outlive a hide armed BEFORE it started — which is the
+     * ordinary case on the click-before-verdict path: the pointer leaves while
+     * the resolve is still out, the reply then replays the click from here, and
+     * the timer that was already ticking would fire into the middle of it.
+     * hideNow() bumps reqSeq, so the /open reply is discarded in silence: no
+     * checkmark on success, and no word at all on a failure the user must see.
+     * `busy` guards the reposition() teardown for the same reason; this guards
+     * the timed one. openPicker() cancels for the same reason on its own leg.
+     */
+    cancelHide();
     busy = true;
     renderBusy();
     send({ type: 'open', payload: payload }).then(function (reply) {
@@ -1641,15 +1740,29 @@
   // -------------------------------------------------------------- hover flow
 
   /*
-   * The hover flow paints FIRST and asks the daemon LATER. scheduleShow runs on
-   * every trusted mouseover of a triaged link and re-targets the overlay in the
-   * same tick — a cached verdict renders its final state, an unknown link
-   * paints the loading circle — and only once the pointer has DWELT
-   * RESOLVE_DELAY on the link is the daemon asked. Scanning quickly down a list
-   * of links therefore moves the button instantly from link to link and sends
-   * nothing at all for the links merely passed through. (The old shape gated
-   * the PAINT on the delay, so exactly that scan kept resetting it and the
-   * button lagged or never came.)
+   * VERDICT FIRST: the button never paints a state that means "hold on". Either
+   * something is known about the link and the final icon goes up at once, or
+   * nothing is, and the page stays untouched until the daemon has answered.
+   * There is no loading circle and no spinner in this flow — an icon that
+   * appears on every hover and then withdraws itself half the time is worse
+   * than one that arrives a few ms late, and on a code host most links resolve
+   * to nothing at all.
+   *
+   * The one exception is what makes this feel instant rather than laggy:
+   * PER-PROJECT OPTIMISM. Once any link in a project has resolved to something
+   * local, the next link in that project paints the ready button immediately,
+   * before its own verdict — the bet is that a repo which is cloned here is
+   * still cloned here, and it is right nearly always. When it is wrong the
+   * verdict corrects it in place: the ready icon turns into the can't-resolve
+   * warning, or leaves. Note the asymmetry — optimism only ever paints the
+   * button EARLY, never late, so a mistake costs one corrected icon and never
+   * a wrong file.
+   *
+   * The dwell is unchanged and still comes before the daemon is asked:
+   * scheduleShow re-targets the overlay on every trusted mouseover, but only
+   * once the pointer has stayed RESOLVE_DELAY on the link does anything go out,
+   * so scanning down a list of links sends nothing for the ones merely passed
+   * through.
    *
    * `px` is the clientX of the mouseover that triggered this — captured and
    * carried to reposition(), because by the time anything paints the event is
@@ -1666,9 +1779,12 @@
     if (settings.paused) return;
     if (a === anchorEl && uiMode !== 'hidden') {
       cancelHide();
-      // A dwell that a leave cancelled must be re-armed on re-entry, or the
-      // plain button would sit unresolved forever.
-      if (uiMode === 'loading' && !resolveTimer && !busy) armDwell(a, url);
+      // A dwell that a leave cancelled must be re-armed on re-entry whenever the
+      // verdict is still owed — whether the link is being tracked silently or is
+      // already showing the optimistic button — or it would never be asked for.
+      if ((uiMode === 'silent' || (uiMode === 'ready' && !okData())) && !resolveTimer && !busy) {
+        armDwell(a, url);
+      }
       return;
     }
 
@@ -1695,6 +1811,9 @@
 
     cancelHide();
     stopDwell();
+    // Re-targeting: whatever the pointer has moved on to, a click made on the
+    // previous link must not open a file for this one.
+    openOnResolve = null;
     anchorEl = a;
     anchorUrl = url;
     if (typeof px === 'number') pointerX = px;
@@ -1713,7 +1832,10 @@
     }
 
     entry = null;
-    renderLoading();
+    // Nothing known about this URL. The project's reputation is the only thing
+    // that can justify painting before the answer.
+    if (projIsLocal(url)) renderReady();
+    else renderSilent();
     armDwell(a, url);
   }
 
@@ -1755,17 +1877,17 @@
 
   function beginResolve(a, url) {
     var seq = ++reqSeq;
-    // The spinner clock starts when the request goes out, not when the button
-    // painted: it measures the daemon, not the dwell.
-    clearSpin();
-    spinTimer = setTimeout(function () {
-      spinTimer = 0;
-      if (seq !== reqSeq || uiMode !== 'loading') return;
-      btn.className = 'cl-btn is-loading';
-    }, SPIN_DELAY);
     send({ type: 'resolve', url: url }).then(function (reply) {
       if (seq !== reqSeq || anchorEl !== a) return;
-      clearSpin();
+      /*
+       * A click that raced this request is claimed here, once, whatever the
+       * verdict turns out to be. Reading it into a local and nulling the field
+       * immediately is the whole guard: every branch below is then free to
+       * repaint or tear down without leaving an intent behind that a LATER
+       * reply — an error retry, say — would honour on the user's behalf.
+       */
+      var intent = openOnResolve;
+      openOnResolve = null;
 
       if (reply.ok) {
         var raw = reply.data && typeof reply.data === 'object' ? reply.data : {};
@@ -1782,6 +1904,16 @@
            */
           var code = raw.code;
           var repo = typeof data.parsed.repo === 'string' ? data.parsed.repo : '';
+          /*
+           * Project memory keys off the CODE alone. FILE_NOT_LOCAL says the repo
+           * IS here and only this path is not, which is exactly as good a proof
+           * of a local checkout as a successful resolve; REPO_NOT_LOCAL says it
+           * is not here at all and retires the belief on the spot. Whether the
+           * daemon also NAMED the repo only decides whether a badge is worth
+           * painting, and does not bear on either fact.
+           */
+          if (code === 'FILE_NOT_LOCAL') projLearn(url);
+          else if (code === 'REPO_NOT_LOCAL') projForget(url);
           if ((code === 'REPO_NOT_LOCAL' || code === 'FILE_NOT_LOCAL') && repo) {
             var miss = {
               kind: 'missing',
@@ -1814,7 +1946,10 @@
         entry = { kind: 'ok', data: data };
         cachePut(url, entry, CACHE_TTL);
         noteRepo(url, data.parsed.owner, data.parsed.repo);
+        projLearn(url);
         renderReady();
+        // A click made while this was in flight was the dwell AND the click.
+        if (intent) activate(data, intent.shift);
         return;
       }
 

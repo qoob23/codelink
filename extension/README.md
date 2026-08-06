@@ -253,17 +253,33 @@ and re-opens the picker with the fresh list.
   daemon owns the URL grammar (its regexes are RE2, not JS) and decides
   file-vs-directory by stat-ing the path, so the extension over-triggers and
   lets `/resolve` say no.
-- **Hover paints first, resolves later.** The button appears the instant a
-  triaged link is hovered — a cached verdict in its final state, an unknown
-  link as the loading circle — and the daemon is asked only after the pointer
-  has dwelt ~150 ms on the link. Scanning quickly down a list of links moves
-  the button instantly from link to link and asks nothing for the ones passed
-  through. Verdicts are cached per URL; the cache **expires after 10 s**,
-  because a resolve is mostly a snapshot of mutable machine state — which
-  Neovim instances are running, which checkouts are mounted. Held for the
-  session, an editor started after the first hover would never be offered.
-  Only a verdict on the URL's *shape* (`NO_PROVIDER`, 4xx) is cached
-  permanently.
+- **The icon is the verdict.** Nothing paints before the daemon has answered:
+  there is no loading circle and no spinner on the hover path, because an icon
+  that appears on every hover and then withdraws itself half the time is worse
+  than one that arrives a few ms late. A hover on an unknown link tracks it
+  silently, the daemon is asked only after the pointer has dwelt ~150 ms, and
+  the button appears for the first time *with* the answer — ready, the
+  can't-resolve warning, or not at all. Scanning down a list of links therefore
+  asks nothing, and shows nothing, for the ones passed through.
+- **Per-project optimism.** The exception that keeps it feeling instant. The
+  content script remembers which projects have proven to exist on this machine,
+  keyed by host plus the first two path segments, learnt from any verdict that
+  found something local (including `FILE_NOT_LOCAL` — the repo *is* here, only
+  the file is not) and dropped on `REPO_NOT_LOCAL`. A link in a project already
+  proven local paints the ready button immediately, before its own verdict; the
+  reply then corrects it in place if the bet was wrong — the ready icon turns
+  into the warning, or leaves. The optimism only ever paints the button *early*,
+  never wrong: every click still goes through a real verdict. Clicking the
+  optimistic button before its verdict is in counts as the dwell — it resolves
+  at once and then performs the open it stood for, with no second click. The
+  memory expires after **5 min** (clones come and go) and holds 64 projects,
+  LRU.
+- **Verdicts are cached per URL**, and the cache **expires after 10 s**, because
+  a resolve is mostly a snapshot of mutable machine state — which Neovim
+  instances are running, which checkouts are mounted. Held for the session, an
+  editor started after the first hover would never be offered. Only a verdict on
+  the URL's *shape* (`NO_PROVIDER`, 4xx) is cached permanently. A cached verdict
+  renders its final state instantly, with no new request.
 - **The hand-over.** A single shared 120 ms timer keeps the button alive while
   the pointer travels from the link to it. Leaving *either* the link or the
   button starts it; entering *either* cancels it.
