@@ -965,12 +965,26 @@
    * that the arriving verdict is free to overrule. The daemon stays the source
    * of truth; being wrong here costs one corrected icon, never a wrong file.
    *
+   * Its one known limit, stated so nobody has to rediscover it: a provider whose
+   * namespace runs deeper than two segments — GitLab-style group/subgroup/repo —
+   * collapses every repo under a group into a single key. Optimism is then
+   * decided per group rather than per repo, so with a per-repo override in play
+   * the no-flash guarantee is only ever as sharp as the key. It costs nothing
+   * worse than that: the verdict carries its own gate, and that is what decides
+   * whether anything STAYS painted.
+   *
    * Expiring and bounded for the same reasons as the URL cache above: a clone
    * can appear or disappear under a long-lived tab, and a session hops through
    * more projects than it is worth remembering. Same delete-then-set idiom, so
    * the first key is always the least recently confirmed.
+   *
+   * Each entry also carries the owner/repo the LEARNING verdict named, because
+   * the optimistic paint is gated by the popup's badge switches exactly like the
+   * can't-resolve warning is, and those are keyed per repo — see scheduleShow.
+   * Empty strings when the daemon named neither, which overrideKey() already
+   * tolerates.
    */
-  var projects = new Map(); // projKey -> expiry timestamp
+  var projects = new Map(); // projKey -> {exp, owner, repo}
 
   function projKey(url) {
     var u;
@@ -984,11 +998,15 @@
     return u.hostname.toLowerCase() + '/' + segs[0].toLowerCase() + '/' + segs[1].toLowerCase();
   }
 
-  function projLearn(url) {
+  function projLearn(url, owner, repo) {
     var k = projKey(url);
     if (!k) return;
     if (projects.has(k)) projects.delete(k);
-    projects.set(k, Date.now() + PROJECT_TTL);
+    projects.set(k, {
+      exp: Date.now() + PROJECT_TTL,
+      owner: typeof owner === 'string' ? owner : '',
+      repo: typeof repo === 'string' ? repo : '',
+    });
     while (projects.size > PROJECT_MAX) {
       var oldest = projects.keys().next().value;
       if (oldest === undefined) break;
@@ -1001,16 +1019,19 @@
     if (k) projects.delete(k);
   }
 
-  function projIsLocal(url) {
+  // The live entry, or null. Returning the entry rather than a boolean is what
+  // lets the caller re-check the badge gate against the repo this project was
+  // learnt from.
+  function projLocal(url) {
     var k = projKey(url);
-    if (!k) return false;
-    var exp = projects.get(k);
-    if (exp === undefined) return false;
-    if (Date.now() >= exp) {
+    if (!k) return null;
+    var e = projects.get(k);
+    if (e === undefined) return null;
+    if (Date.now() >= e.exp) {
       projects.delete(k);
-      return false;
+      return null;
     }
-    return true;
+    return e;
   }
 
   var pickerRows = [];
@@ -1758,6 +1779,17 @@
    * button EARLY, never late, so a mistake costs one corrected icon and never
    * a wrong file.
    *
+   * Correcting an icon is only acceptable where the correction is something the
+   * user agreed to see. So the optimistic paint is gated by the SAME badge
+   * switches as the can't-resolve warning: a repo whose warning is silenced does
+   * not get an optimistic icon either, because the only visible result of being
+   * wrong about it would be a paint immediately withdrawn — the flash this gate
+   * exists to prevent. It follows that with the global switch off and no
+   * per-repo override, optimism is off everywhere and the button always waits
+   * for its verdict; an override set to true turns the badge AND the optimism
+   * back on for that one repo. That is deliberate: the switch means "do not put
+   * anything on the page about this repo unless it is real".
+   *
    * The dwell is unchanged and still comes before the daemon is asked:
    * scheduleShow re-targets the overlay on every trusted mouseover, but only
    * once the pointer has stayed RESOLVE_DELAY on the link does anything go out,
@@ -1832,9 +1864,16 @@
     }
 
     entry = null;
-    // Nothing known about this URL. The project's reputation is the only thing
-    // that can justify painting before the answer.
-    if (projIsLocal(url)) renderReady();
+    /*
+     * Nothing known about this URL. The project's reputation is the only thing
+     * that can justify painting before the answer — and only while the user has
+     * not asked for this repo to keep quiet. Gated here, at hover time rather
+     * than at learn time, exactly like the cached-'missing' gate above: flipping
+     * either popup switch takes effect on the next hover, with no reload and
+     * without waiting out the project TTL.
+     */
+    var proj = projLocal(url);
+    if (proj && badgeVisible(url, proj.owner, proj.repo)) renderReady();
     else renderSilent();
     armDwell(a, url);
   }
@@ -1904,21 +1943,23 @@
            */
           var code = raw.code;
           var repo = typeof data.parsed.repo === 'string' ? data.parsed.repo : '';
+          var owner = typeof data.parsed.owner === 'string' ? data.parsed.owner : '';
           /*
            * Project memory keys off the CODE alone. FILE_NOT_LOCAL says the repo
            * IS here and only this path is not, which is exactly as good a proof
            * of a local checkout as a successful resolve; REPO_NOT_LOCAL says it
            * is not here at all and retires the belief on the spot. Whether the
            * daemon also NAMED the repo only decides whether a badge is worth
-           * painting, and does not bear on either fact.
+           * painting, and does not bear on either fact — the name is carried
+           * along so the next hover can re-check that gate, nothing more.
            */
-          if (code === 'FILE_NOT_LOCAL') projLearn(url);
+          if (code === 'FILE_NOT_LOCAL') projLearn(url, owner, repo);
           else if (code === 'REPO_NOT_LOCAL') projForget(url);
           if ((code === 'REPO_NOT_LOCAL' || code === 'FILE_NOT_LOCAL') && repo) {
             var miss = {
               kind: 'missing',
               code: code,
-              owner: typeof data.parsed.owner === 'string' ? data.parsed.owner : '',
+              owner: owner,
               repo: repo,
               repoPath: typeof data.parsed.repoPath === 'string' ? data.parsed.repoPath : '',
             };
@@ -1946,7 +1987,7 @@
         entry = { kind: 'ok', data: data };
         cachePut(url, entry, CACHE_TTL);
         noteRepo(url, data.parsed.owner, data.parsed.repo);
-        projLearn(url);
+        projLearn(url, data.parsed.owner, data.parsed.repo);
         renderReady();
         // A click made while this was in flight was the dwell AND the click.
         if (intent) activate(data, intent.shift);

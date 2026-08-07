@@ -273,7 +273,13 @@ and re-opens the picker with the fresh list.
   optimistic button before its verdict is in counts as the dwell — it resolves
   at once and then performs the open it stood for, with no second click. The
   memory expires after **5 min** (clones come and go) and holds 64 projects,
-  LRU.
+  LRU. The optimistic paint obeys the **same badge gating as the missing
+  warning** (the popup's global switch plus per-repo overrides, checked on
+  every hover): a repo whose warning is silenced never paints before its
+  verdict, because the only visible result of being wrong about it would be a
+  paint immediately withdrawn. With the global switch off, optimism is off
+  everywhere until an override turns a repo — badge and optimism both — back
+  on.
 - **Verdicts are cached per URL**, and the cache **expires after 10 s**, because
   a resolve is mostly a snapshot of mutable machine state — which Neovim
   instances are running, which checkouts are mounted. Held for the session, an

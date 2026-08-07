@@ -13,6 +13,10 @@
  *     local, the next link in that project paints the ready button BEFORE its
  *     own verdict — and the verdict corrects it in place, turning the ready
  *     icon into the can't-resolve warning on FILE_NOT_LOCAL;
+ *   - ...but only where that correction is one the user agreed to see: with the
+ *     warning badge gated off for the repo, no optimistic icon paints either,
+ *     so the paint-then-withdraw flash cannot happen. A per-repo override turns
+ *     both back on, and the gate never touches the real ready state;
  *   - a click on that optimistic button IS the dwell: it resolves immediately
  *     and then performs the open it stood for, with no second interaction —
  *     the /open it triggers outliving the hide that the leaving pointer armed
@@ -90,8 +94,10 @@ function missingReply(code) {
 }
 
 // openDelayMs defaults to replyDelayMs; give it its own value to hold an /open
-// round trip open across a hide that was armed before the click.
-function makeWorld(replyDelayMs, replyFor, openDelayMs) {
+// round trip open across a hide that was armed before the click. `settings` is
+// the popup's stored object — omitted, the content script's own defaults stand
+// (badges on), which is what every block that does not care about gating wants.
+function makeWorld(replyDelayMs, replyFor, openDelayMs, settings) {
   const dom = new JSDOM(
     `<!doctype html><html><body>
        <a id="lnk1" href="${URL_ONE}">one</a>
@@ -114,6 +120,7 @@ function makeWorld(replyDelayMs, replyFor, openDelayMs) {
   const reply = replyFor || (() => okReply());
   const openDelay = openDelayMs === undefined ? replyDelayMs : openDelayMs;
   const sent = [];
+  let onChanged = null;
   window.chrome = {
     runtime: {
       id: 'test',
@@ -126,6 +133,18 @@ function makeWorld(replyDelayMs, replyFor, openDelayMs) {
           () => cb(isResolve ? reply(msg.url) : { ok: true, data: { ok: true } }),
           (isResolve ? replyDelayMs : openDelay) || 0
         );
+      },
+    },
+    storage: {
+      local: {
+        get(key, cb) {
+          cb({ settings: settings || {} });
+        },
+      },
+      onChanged: {
+        addListener(fn) {
+          onChanged = fn;
+        },
       },
     },
   };
@@ -151,12 +170,38 @@ function makeWorld(replyDelayMs, replyFor, openDelayMs) {
     target[IMPL]._dispatch(event[IMPL]);
   };
 
-  return { window, shadow: capturedRoot, sent, user };
+  return {
+    window,
+    shadow: capturedRoot,
+    sent,
+    user,
+    fireSettings: (s) => onChanged && onChanged({ settings: { newValue: s } }, 'local'),
+  };
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const resolves = (sent) => sent.filter((m) => m.type === 'resolve');
 const opens = (sent) => sent.filter((m) => m.type === 'open');
+
+/*
+ * A flash is not visible to a probe that happens to land either side of it, so
+ * the no-optimism pins watch CONTINUOUSLY instead: poll the panel while the
+ * window of interest elapses and report whether it was ever open. Against the
+ * behaviour this gate replaced the flash lasts the whole dwell plus the round
+ * trip, so a 5 ms sampler catches it many times over.
+ */
+function watchPanel(panel) {
+  let everOpen = false;
+  const t = setInterval(() => {
+    if (panel.classList.contains('is-open')) everOpen = true;
+  }, 5);
+  return {
+    stop() {
+      clearInterval(t);
+      return everOpen;
+    },
+  };
+}
 
 (async () => {
   let fails = 0;
@@ -282,6 +327,158 @@ const opens = (sent) => sent.filter((m) => m.type === 'open');
           'panel=' + panel.className + ' btn=' + btn.className);
     check('...having asked the daemon exactly once for it',
           resolves(w.sent).length === 2, resolves(w.sent).length + ' resolves');
+  }
+
+  // --- optimism obeys the badge switches -------------------------------------
+  {
+    /*
+     * The regression this gate exists for: with the warning badge silenced, an
+     * optimistic icon on a FILE_NOT_LOCAL link could only ever paint and then be
+     * taken away again. It must not paint at all.
+     */
+    const w = makeWorld(
+      200,
+      (url) => (url === URL_ONE ? okReply() : missingReply('FILE_NOT_LOCAL')),
+      undefined,
+      { warnBadges: false }
+    );
+    const panel = w.shadow.getElementById('panel');
+    const lnk1 = w.window.document.getElementById('lnk1');
+    const lnk2 = w.window.document.getElementById('lnk2');
+
+    w.user(lnk1, new w.window.MouseEvent('mouseover', { bubbles: true, clientX: 120 }));
+    await sleep(500); // dwell 150 + reply 200
+    check('badges off: a real ok verdict still paints, and teaches the project',
+          panel.classList.contains('is-open'), 'panel=' + panel.className);
+
+    // Settle the first link's button all the way down, so anything the watcher
+    // sees from here on belongs to the second link and nothing else.
+    w.user(lnk1, new w.window.MouseEvent('mouseout', { bubbles: true }));
+    await sleep(250);
+    check('...and retires when the pointer leaves', !panel.classList.contains('is-open'), panel.className);
+
+    const watch = watchPanel(panel);
+    w.user(lnk2, new w.window.MouseEvent('mouseover', { bubbles: true, clientX: 140 }));
+    await sleep(600); // dwell 150 + reply 200, with room the far side of it
+    const flashed = watch.stop();
+    check('a badge-gated repo never paints optimistically — no flash, ever',
+          !flashed, 'the panel opened at some point before the verdict');
+    check('...and the gated missing verdict leaves it closed too',
+          !panel.classList.contains('is-open'), 'panel=' + panel.className);
+    check('...the daemon was still asked, silently',
+          resolves(w.sent).length === 2, resolves(w.sent).length + ' resolves');
+  }
+
+  // --- ...unless a per-repo override says otherwise --------------------------
+  {
+    const w = makeWorld(
+      200,
+      (url) => (url === URL_ONE ? okReply() : missingReply('FILE_NOT_LOCAL')),
+      undefined,
+      { warnBadges: false, warnOverrides: { [`${PAGE_HOST}/you/widget`]: true } }
+    );
+    const btn = w.shadow.querySelector('.cl-btn');
+    const panel = w.shadow.getElementById('panel');
+    const lnk1 = w.window.document.getElementById('lnk1');
+    const lnk2 = w.window.document.getElementById('lnk2');
+
+    w.user(lnk1, new w.window.MouseEvent('mouseover', { bubbles: true, clientX: 120 }));
+    await sleep(500);
+    w.user(lnk1, new w.window.MouseEvent('mouseout', { bubbles: true }));
+    w.user(lnk2, new w.window.MouseEvent('mouseover', { bubbles: true, clientX: 140 }));
+    await sleep(30);
+    check('an override on re-enables optimism, not just the badge',
+          panel.classList.contains('is-open') && resolves(w.sent).length === 1,
+          'panel=' + panel.className + ', ' + resolves(w.sent).length + ' resolves');
+
+    await sleep(500);
+    check('...and the warning it was allowed to show duly arrives',
+          panel.classList.contains('is-open') && btn.classList.contains('is-missing'),
+          'panel=' + panel.className + ' btn=' + btn.className);
+  }
+
+  // --- gating optimism does not gate the real ready state --------------------
+  {
+    // Badges off, but this link's verdict turns out to be a genuine file: the
+    // button is owed, just not in advance.
+    const w = makeWorld(200, () => okReply(), undefined, { warnBadges: false });
+    const btn = w.shadow.querySelector('.cl-btn');
+    const panel = w.shadow.getElementById('panel');
+    const lnk1 = w.window.document.getElementById('lnk1');
+    const lnk2 = w.window.document.getElementById('lnk2');
+
+    w.user(lnk1, new w.window.MouseEvent('mouseover', { bubbles: true, clientX: 120 }));
+    await sleep(500);
+    w.user(lnk1, new w.window.MouseEvent('mouseout', { bubbles: true }));
+    await sleep(250);
+
+    const watch = watchPanel(panel);
+    w.user(lnk2, new w.window.MouseEvent('mouseover', { bubbles: true, clientX: 140 }));
+    await sleep(100); // still inside the dwell
+    check('badges off: nothing is painted in advance',
+          !watch.stop() && !panel.classList.contains('is-open'), 'panel=' + panel.className);
+
+    await sleep(400);
+    check('...but the ok verdict paints ready exactly as it always did',
+          panel.classList.contains('is-open') &&
+          !btn.classList.contains('is-missing') &&
+          !btn.classList.contains('is-loading'),
+          'panel=' + panel.className + ' btn=' + btn.className);
+  }
+
+  // --- the gate is read at hover time, so the popup takes effect at once -----
+  {
+    /*
+     * The project is learnt here while the badges are ON, and every probe below
+     * re-hovers that same second link — so a gate consulted at LEARN time, or
+     * remembered alongside the entry, would keep painting through the off phase
+     * and this block would fail. Each probe also leaves before the dwell fires,
+     * so the link is never resolved and never cached: what is being measured is
+     * the hover decision itself, three times over, on one unchanging entry.
+     */
+    const w = makeWorld(200, (url) =>
+      url === URL_ONE ? okReply() : missingReply('FILE_NOT_LOCAL')
+    );
+    const panel = w.shadow.getElementById('panel');
+    const lnk1 = w.window.document.getElementById('lnk1');
+    const lnk2 = w.window.document.getElementById('lnk2');
+
+    // Settle the overlay all the way down between probes, so nothing the
+    // watcher sees can be left over from the hover before it.
+    const probe = async () => {
+      const watch = watchPanel(panel);
+      w.user(lnk2, new w.window.MouseEvent('mouseover', { bubbles: true, clientX: 140 }));
+      await sleep(60); // well inside the 150 ms dwell: no resolve can have gone out
+      const painted = watch.stop() || panel.classList.contains('is-open');
+      w.user(lnk2, new w.window.MouseEvent('mouseout', { bubbles: true }));
+      await sleep(250);
+      return painted;
+    };
+
+    w.user(lnk1, new w.window.MouseEvent('mouseover', { bubbles: true, clientX: 120 }));
+    await sleep(500);
+    w.user(lnk1, new w.window.MouseEvent('mouseout', { bubbles: true }));
+    await sleep(250);
+    check('the project was learnt with the badges on',
+          resolves(w.sent).length === 1, resolves(w.sent).length + ' resolves');
+
+    check('badges on: optimism paints', await probe() === true, 'nothing painted');
+
+    w.fireSettings({ warnBadges: false });
+    check('the popup switch stops it on the very next hover, with no reload',
+          await probe() === false, 'the panel opened before the verdict');
+
+    // An override arriving the same way revives it for this one repo, which is
+    // also what proves the entry remembers WHICH repo it was learnt from.
+    w.fireSettings({
+      warnBadges: false,
+      warnOverrides: { [`${PAGE_HOST}/you/widget`]: true },
+    });
+    check('an override arriving the same way revives it, global still off',
+          await probe() === true, 'nothing painted');
+
+    check('none of the three probes ever reached the daemon',
+          resolves(w.sent).length === 1, resolves(w.sent).length + ' resolves');
   }
 
   // --- a click on the optimistic button IS the dwell -------------------------
