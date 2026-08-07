@@ -266,3 +266,50 @@ records the calls, not the diffs.
   for partial coverage. Requiring trusted events removes the zero-interaction
   half of the attack; the rest is a product decision about friction, recorded
   here so it is a choice rather than an oversight.
+
+## 2026-08-07 — the icon is the verdict
+
+The hover flow painted a plain button instantly and resolved behind it, with a
+spinner reserved for a slow daemon. Replaced wholesale: nothing paints until a
+verdict is in, and there is no loading state at all.
+
+- **A pre-verdict button was a promise the extension could not keep.** It looked
+  clickable before anyone knew whether there was anything to open, and the
+  spinner advertised latency the daemon does not have. Now the icon appearing
+  *is* the answer — click it and something happens, warning or editor.
+- **Per-project optimism keeps it feeling instant without lying twice.** Once
+  any URL of a project has proven the repo local, later links in it paint the
+  ready icon before their own verdict and are corrected in place if the bet was
+  wrong. `FILE_NOT_LOCAL` counts as proof — the repo *is* here, only the file is
+  not — which is the case the user asked for by name: ready icon first, warning
+  when the daemon says so.
+- **The project key is a client-side guess, and that is fine.** Host plus the
+  first two path segments, learnt and looked up the same way, so it is
+  self-consistent without the extension growing a URL grammar it is forbidden
+  to have. It only gates an *early* paint; every click still goes through a
+  real verdict. A GitLab-style deep namespace collapses a group into one key —
+  acknowledged in the code rather than engineered away, because the verdict's
+  own gate decides what stays painted.
+- **A click on the optimistic button is the dwell.** Waiting out a timer after
+  an explicit click would be latency theatre; the click resolves immediately
+  and performs the open it stood for. The intent is claimed once, at the top of
+  the reply handler, so a down/error verdict can never leave it armed for a
+  retry the user did not mean.
+- **Optimism obeys the badge switches** (added same day, after the first cut
+  shipped the flaw as a documented trade-off and it was rejected): with the
+  can't-resolve warning silenced for a repo, the optimistic icon must not paint
+  either — the only visible outcome of being wrong would be a paint immediately
+  withdrawn. The switch means "put nothing on the page about this repo unless
+  it is real", and optimism is part of "anything".
+- **Review caught a teardown race the tests could not see.** The hide timer
+  armed by a leaving pointer had no `busy` guard, so an intent-driven `/open`
+  could be torn down mid-flight: file opens, no checkmark, failures swallowed.
+  The picker leg was already safe only because `openPicker` happens to call
+  `cancelHide()`; `doOpen` now does the same. A guard that exists on one leg of
+  a fork and not the other is the same lesson as the audit's cwd finding.
+- **Mutation-checking the new tests earned its keep twice.** The intent-safety
+  pins survived every single-point mutation of the abandonment path — it is
+  triple-guarded, so no one deletion breaks it — which itself was worth
+  learning: the check with teeth turned out to be the error-retry one. And the
+  hover-time-vs-learn-time gate pin was proven against the exact plausible
+  regression (gate evaluated at learn time), not against a strawman.
